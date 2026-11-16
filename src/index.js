@@ -62,21 +62,21 @@ async function currentUser(request, env) {
   const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(request.headers.get('cookie') || '');
   if (!m) return null;
   return env.DB.prepare(
-    `SELECT u.id, u.role, u.name, u.username, u.roll_no FROM sessions s JOIN users u ON u.id = s.user_id
+    `SELECT u.id, u.role, u.name, u.username, u.roll_no, u.section_id FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token = ? AND s.expires_at > ?`,
   )
     .bind(m[1], now())
     .first();
 }
 
-async function createUser(env, { role, name, username, password, roll_no = null }) {
+async function createUser(env, { role, name, username, password, roll_no = null, section_id = null }) {
   if (password.length < 6) fail(400, `Password for ${username} must be at least 6 characters`);
   const { hash, salt } = await hashPassword(password);
   try {
     await env.DB.prepare(
-      'INSERT INTO users (role, name, username, roll_no, pw_hash, pw_salt, created_at) VALUES (?,?,?,?,?,?,?)',
+      'INSERT INTO users (role, name, username, roll_no, pw_hash, pw_salt, created_at, section_id) VALUES (?,?,?,?,?,?,?,?)',
     )
-      .bind(role, name, username.toLowerCase(), roll_no, hash, salt, now())
+      .bind(role, name, username.toLowerCase(), roll_no, hash, salt, now(), section_id)
       .run();
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) fail(409, `Username "${username}" already exists`);
@@ -186,17 +186,17 @@ async function handle(request, env, ctx) {
   }
 
   if (route('GET', /^\/api\/status$/)) {
-    const c = await env.DB.prepare(`SELECT COUNT(*) AS n FROM users WHERE role='faculty'`).first();
+    const c = await env.DB.prepare(`SELECT COUNT(*) AS n FROM users WHERE role='admin'`).first();
     return json({ needsSetup: c.n === 0, provider: env.EVAL_PROVIDER || 'workers-ai' });
   }
 
-  // First run only: create the faculty account. Disabled once a faculty exists.
+  // First run only: create the admin account. Disabled once an admin exists.
   if (route('POST', /^\/api\/setup$/)) {
-    const c = await env.DB.prepare(`SELECT COUNT(*) AS n FROM users WHERE role='faculty'`).first();
+    const c = await env.DB.prepare(`SELECT COUNT(*) AS n FROM users WHERE role='admin'`).first();
     if (c.n > 0) fail(403, 'Setup is already complete');
     const b = await body(request);
     await createUser(env, {
-      role: 'faculty',
+      role: 'admin',
       name: str(b.name, 'Name', 100),
       username: str(b.username, 'Username', 50),
       password: str(b.password, 'Password', 100),
@@ -235,6 +235,7 @@ async function handle(request, env, ctx) {
   if (!user) fail(401, 'Please log in');
   if (route('GET', /^\/api\/me$/)) return json(user);
 
+  const admin = () => user.role === 'admin' || fail(403, 'Admin only');
   const faculty = () => user.role === 'faculty' || fail(403, 'Faculty only');
   const student = () => user.role === 'student' || fail(403, 'Students only');
 
@@ -257,31 +258,113 @@ async function handle(request, env, ctx) {
     return t || fail(404, 'Attempt not found');
   };
 
-  // ----- faculty: students -----
+  // ----- admin: master data -----
 
-  if (route('GET', /^\/api\/students$/)) {
-    faculty();
-    const { results } = await env.DB.prepare(
-      `SELECT id, name, username, roll_no FROM users WHERE role='student' ORDER BY roll_no, name`,
-    ).all();
-    return json(results);
+  if (route('GET', /^\/api\/admin\/data$/)) {
+    admin();
+    const [sections, subjects, staff, students] = await env.DB.batch([
+      env.DB.prepare(`SELECT s.id, s.name, (SELECT COUNT(*) FROM users WHERE section_id = s.id) AS students FROM sections s ORDER BY s.name`),
+      env.DB.prepare('SELECT id, name, code, semester FROM subjects ORDER BY semester, code'),
+      env.DB.prepare(`SELECT id, name, username FROM users WHERE role='faculty' ORDER BY name`),
+      env.DB.prepare(
+        `SELECT u.id, u.name, u.username, u.roll_no, s.name AS section FROM users u LEFT JOIN sections s ON s.id = u.section_id
+         WHERE u.role='student' ORDER BY s.name, u.roll_no, u.name`,
+      ),
+    ]);
+    return json({ sections: sections.results, subjects: subjects.results, faculty: staff.results, students: students.results });
   }
 
-  if (route('POST', /^\/api\/students$/)) {
-    faculty();
+  const unique = async (what, run) => {
+    try {
+      return await run();
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) fail(409, `${what} already exists`);
+      throw e;
+    }
+  };
+
+  if (route('POST', /^\/api\/admin\/sections$/)) {
+    admin();
+    const name = str((await body(request)).name, 'Section name', 80);
+    await unique(`Section "${name}"`, () => env.DB.prepare('INSERT INTO sections (name) VALUES (?)').bind(name).run());
+    return json({ ok: true });
+  }
+
+  if (route('POST', /^\/api\/admin\/subjects$/)) {
+    admin();
     const b = await body(request);
+    const code = str(b.code, 'Subject code', 30);
+    const sem = b.semester === null || b.semester === '' || b.semester === undefined ? null : Number(b.semester);
+    if (sem !== null && !(Number.isInteger(sem) && sem >= 1 && sem <= 12)) fail(400, 'Semester must be 1-12');
+    await unique(`Subject code "${code}"`, () =>
+      env.DB.prepare('INSERT INTO subjects (name, code, semester) VALUES (?,?,?)').bind(str(b.name, 'Subject name', 150), code, sem).run(),
+    );
+    return json({ ok: true });
+  }
+
+  if (route('POST', /^\/api\/admin\/faculty$/)) {
+    admin();
+    const b = await body(request);
+    await createUser(env, {
+      role: 'faculty',
+      name: str(b.name, 'Name', 100),
+      username: str(b.username, 'Username', 50),
+      password: str(b.password, 'Password', 100),
+    });
+    return json({ ok: true });
+  }
+
+  if (route('POST', /^\/api\/admin\/students$/)) {
+    admin();
+    const b = await body(request);
+    const section = await env.DB.prepare('SELECT id FROM sections WHERE id = ?').bind(b.section_id ?? 0).first();
+    if (!section) fail(400, 'Choose a section');
     if (!Array.isArray(b.students) || !b.students.length) fail(400, 'No students given');
     if (b.students.length > 200) fail(400, 'Add at most 200 students at a time');
-    for (const s of b.students) {
-      await createUser(env, {
-        role: 'student',
-        roll_no: str(s.roll_no, 'Roll no', 30),
-        name: str(s.name, 'Name', 100),
-        username: str(s.username, 'Username', 50),
-        password: str(s.password, 'Password', 100),
-      });
+    // Check every line first, so a mistake on line 40 does not leave lines 1-39 half added.
+    const rows = b.students.map((x) => ({
+      role: 'student',
+      section_id: section.id,
+      roll_no: str(x.roll_no, 'Roll no', 30),
+      name: str(x.name, 'Name', 100),
+      username: str(x.username, 'Username', 50).toLowerCase(),
+      password: str(x.password, 'Password', 100),
+    }));
+    const names = rows.map((r) => r.username);
+    const dup = names.find((n, i) => names.indexOf(n) !== i);
+    if (dup) fail(400, `Username "${dup}" appears twice in the list`);
+    for (const r of rows) {
+      if (r.password.length < 6) fail(400, `Password for ${r.username} must be at least 6 characters`);
+      const taken = await env.DB.prepare('SELECT 1 FROM users WHERE username = ?').bind(r.username).first();
+      if (taken) fail(409, `Username "${r.username}" already exists`);
     }
-    return json({ added: b.students.length });
+    for (const r of rows) await createUser(env, r);
+    return json({ added: rows.length });
+  }
+
+  if ((m = route('POST', /^\/api\/admin\/users\/(\d+)\/password$/))) {
+    admin();
+    const target = await env.DB.prepare(`SELECT id FROM users WHERE id = ? AND role != 'admin'`).bind(+m[1]).first();
+    if (!target) fail(404, 'User not found');
+    const password = str((await body(request)).password, 'Password', 100);
+    if (password.length < 6) fail(400, 'Password must be at least 6 characters');
+    const { hash, salt } = await hashPassword(password);
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET pw_hash = ?, pw_salt = ? WHERE id = ?').bind(hash, salt, target.id),
+      env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.id),
+    ]);
+    return json({ ok: true });
+  }
+
+  // ----- faculty: master data for the assessment form -----
+
+  if (route('GET', /^\/api\/master$/)) {
+    faculty();
+    const [subjects, sections] = await env.DB.batch([
+      env.DB.prepare('SELECT id, name, code, semester FROM subjects ORDER BY semester, code'),
+      env.DB.prepare(`SELECT s.id, s.name, (SELECT COUNT(*) FROM users WHERE section_id = s.id) AS students FROM sections s ORDER BY s.name`),
+    ]);
+    return json({ subjects: subjects.results, sections: sections.results });
   }
 
   // ----- faculty: assessments -----
@@ -315,6 +398,12 @@ async function handle(request, env, ctx) {
     // An MCQ Test is checked against the key, so its result is always released on submit.
     const release = type === 'MCQ Test' ? 'instant'
       : type !== 'Sessional' && b.release_mode === 'instant' ? 'instant' : 'after_approval';
+    const subject = await env.DB.prepare('SELECT name, code FROM subjects WHERE id = ?').bind(b.subject_id ?? 0).first();
+    if (!subject) fail(400, 'Choose a subject');
+    const sectionIds = [...new Set(Array.isArray(b.section_ids) ? b.section_ids.filter(Number.isInteger) : [])];
+    if (!sectionIds.length) fail(400, 'Choose at least one section');
+    const known = await env.DB.prepare(`SELECT COUNT(*) AS n FROM sections WHERE id IN (${sectionIds.map(() => '?').join(',')})`).bind(...sectionIds).first();
+    if (known.n !== sectionIds.length) fail(400, 'Unknown section');
     if (!Array.isArray(b.questions) || !b.questions.length) fail(400, 'Add at least one question');
     if (b.questions.length > 30) fail(400, 'At most 30 questions');
 
@@ -356,19 +445,20 @@ async function handle(request, env, ctx) {
       `INSERT INTO assessments (faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at)
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
     )
-      .bind(user.id, str(b.subject_name, 'Subject name', 150), str(b.subject_code, 'Subject code', 30), type, number, duration,
+      .bind(user.id, subject.name, subject.code, type, number, duration,
         start.toISOString(), end.toISOString(), release, now())
       .run();
     const id = ins.meta.last_row_id;
-    await env.DB.batch(
-      questions.map((q, i) =>
+    await env.DB.batch([
+      ...sectionIds.map((sid) => env.DB.prepare('INSERT INTO assessment_sections (assessment_id, section_id) VALUES (?,?)').bind(id, sid)),
+      ...questions.map((q, i) =>
         env.DB.prepare(
           `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index)
            VALUES (?,?,?,?,?,?,?,?,?,?)`,
         ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric), q.kind,
           q.options ? JSON.stringify(q.options) : null, q.correct),
       ),
-    );
+    ]);
     return json({ id });
   }
 
@@ -387,8 +477,12 @@ async function handle(request, env, ctx) {
     )
       .bind(a.id)
       .all();
+    const secs = await env.DB.prepare(
+      `SELECT s.name FROM assessment_sections x JOIN sections s ON s.id = x.section_id WHERE x.assessment_id = ? ORDER BY s.name`,
+    ).bind(a.id).all();
     return json({
       ...a,
+      sections: secs.results.map((r) => r.name),
       questions: qs.results.map((q) => ({
         ...q,
         rubric: JSON.parse(q.rubric_json),
@@ -398,6 +492,27 @@ async function handle(request, env, ctx) {
       })),
       attempts: at.results,
     });
+  }
+
+  // Published marks of every student, question by question (source for analysis and the marks export).
+  if ((m = route('GET', /^\/api\/assessments\/(\d+)\/marks$/))) {
+    faculty();
+    const a = await ownAssessment(+m[1]);
+    const [qs, rows] = await env.DB.batch([
+      env.DB.prepare('SELECT id, seq, co, max_marks FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id),
+      env.DB.prepare(
+        `SELECT u.roll_no, u.name, sec.name AS section, t.id AS attempt_id, an.question_id, an.final_marks
+         FROM attempts t JOIN users u ON u.id = t.student_id LEFT JOIN sections sec ON sec.id = u.section_id
+         JOIN answers an ON an.attempt_id = t.id
+         WHERE t.assessment_id = ? AND t.status = 'published' ORDER BY sec.name, u.roll_no, u.name`,
+      ).bind(a.id),
+    ]);
+    const byAttempt = new Map();
+    for (const r of rows.results) {
+      if (!byAttempt.has(r.attempt_id)) byAttempt.set(r.attempt_id, { roll_no: r.roll_no, name: r.name, section: r.section, marks: {} });
+      byAttempt.get(r.attempt_id).marks[r.question_id] = r.final_marks;
+    }
+    return json({ questions: qs.results, students: [...byAttempt.values()] });
   }
 
   if ((m = route('POST', /^\/api\/assessments\/(\d+)\/publish$/))) {
@@ -473,9 +588,12 @@ async function handle(request, env, ctx) {
         (SELECT COUNT(*) FROM questions WHERE assessment_id = s.id) AS question_count,
         t.id AS attempt_id, t.status AS attempt_status
        FROM assessments s LEFT JOIN attempts t ON t.assessment_id = s.id AND t.student_id = ?
-       WHERE s.status = 'published' ORDER BY s.start_at DESC`,
+       WHERE s.status = 'published'
+         AND (NOT EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = s.id)
+              OR EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = s.id AND x.section_id = ?))
+       ORDER BY s.start_at DESC`,
     )
-      .bind(user.id)
+      .bind(user.id, user.section_id)
       .all();
     return json(results);
   }
@@ -483,7 +601,11 @@ async function handle(request, env, ctx) {
   // Start (or resume) an attempt. Model answers, rubrics and MCQ answer keys are never sent to the student here.
   if ((m = route('POST', /^\/api\/assessments\/(\d+)\/start$/))) {
     student();
-    const a = await env.DB.prepare(`SELECT * FROM assessments WHERE id = ? AND status='published'`).bind(+m[1]).first();
+    const a = await env.DB.prepare(
+      `SELECT * FROM assessments s WHERE s.id = ? AND s.status='published'
+         AND (NOT EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = s.id)
+              OR EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = s.id AND x.section_id = ?))`,
+    ).bind(+m[1], user.section_id).first();
     if (!a) fail(404, 'Assessment not found');
     let t = await env.DB.prepare('SELECT * FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(a.id, user.id).first();
     const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();

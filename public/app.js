@@ -57,8 +57,8 @@ const act = (fn) => async (e) => {
 
 function drawNav() {
   if (!user) return (nav.innerHTML = '');
-  const links = user.role === 'faculty'
-    ? '<a href="#/">Assessments</a><a href="#/new">New assessment</a><a href="#/students">Students</a>'
+  const links = user.role === 'admin' ? '<a href="#/">Master data</a>'
+    : user.role === 'faculty' ? '<a href="#/">Assessments</a><a href="#/new">New assessment</a>'
     : '<a href="#/">My assessments</a>';
   nav.innerHTML = `${links}<span class="muted small">${esc(user.name)}</span><button class="ghost small" id="logout">Log out</button>`;
   document.getElementById('logout').onclick = act(async () => {
@@ -73,11 +73,11 @@ function drawNav() {
 
 function viewSetup() {
   app.innerHTML = `<div class="card narrow"><h1>First-time setup</h1>
-    <p class="muted">Create the faculty account. This screen appears only once.</p>
+    <p class="muted">Create the admin account. The admin adds sections, subjects, faculty and students. This screen appears only once.</p>
     <form id="f"><label>Full name<input name="name" required></label>
     <label>Username<input name="username" required autocomplete="username"></label>
     <label>Password (min 6 characters)<input name="password" type="password" minlength="6" required autocomplete="new-password"></label>
-    <button>Create faculty account</button></form></div>`;
+    <button>Create admin account</button></form></div>`;
   document.getElementById('f').onsubmit = act(async (e) => {
     await api('POST', '/setup', Object.fromEntries(new FormData(e.target)));
     toast('Account created. Please log in.');
@@ -110,40 +110,76 @@ async function viewFacultyHome() {
   app.innerHTML = `<div class="between"><h1>Assessments</h1><a class="btn" href="#/new">New assessment</a></div>
     ${provider === 'mock' ? '<div class="note warn"><b>Mock scorer is active.</b> Marks shown are dummy keyword counts, not real evaluation.</div>' : ''}
     <div class="card">${list.length ? `<table><thead><tr><th>Assessment</th><th>Status</th><th>Result release</th><th>Submitted</th><th>Results out</th></tr></thead><tbody>${rows}</tbody></table>`
-      : '<p class="muted">No assessments yet. Add students first, then create an assessment.</p>'}</div>`;
+      : '<p class="muted">No assessments yet.</p>'}</div>`;
 }
 
-async function viewStudents() {
+async function viewAdmin() {
   const seq = nav_seq;
-  const list = await api('GET', '/students');
+  const d = await api('GET', '/admin/data');
   if (seq !== nav_seq) return;
-  app.innerHTML = `<h1>Students</h1>
-    <div class="card"><h2>Add students</h2>
-      <p class="muted small">One student per line: <b>roll no, name, username, password</b></p>
-      <form id="f"><textarea name="lines" rows="5" placeholder="101, Student Name, student101, secret12" required></textarea>
-      <p><button>Add students</button></p></form></div>
-    <div class="card"><h2>Student list (${list.length})</h2>
-      ${list.length ? `<table><thead><tr><th>Roll no</th><th>Name</th><th>Username</th></tr></thead><tbody>${list.map((s) => `<tr><td>${esc(s.roll_no)}</td><td>${esc(s.name)}</td><td>${esc(s.username)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No students yet.</p>'}</div>`;
-  document.getElementById('f').onsubmit = act(async (e) => {
-    const students = e.target.lines.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l, i) => {
+  const table = (head, rows, empty) => rows.length
+    ? `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>` : `<p class="muted">${empty}</p>`;
+  const reset = (u) => `<button type="button" class="ghost small" data-reset="${u.id}" data-name="${esc(u.name)}">Reset password</button>`;
+  app.innerHTML = `<h1>Master data</h1>
+    <div class="card"><h2>1. Sections (${d.sections.length})</h2>
+      <form id="fsec" class="row"><label style="flex:3 1 260px">Section name<input name="name" placeholder="B.Tech CSE Sem 5 - A" required></label><p><button>Add section</button></p></form>
+      ${table(['Section', 'Students'], d.sections.map((x) => `<tr><td>${esc(x.name)}</td><td>${x.students}</td></tr>`), 'No sections yet.')}</div>
+    <div class="card"><h2>2. Subjects (${d.subjects.length})</h2>
+      <form id="fsub" class="row"><label style="flex:3 1 220px">Subject name<input name="name" required></label><label>Subject code<input name="code" required></label>
+        <label>Semester (optional)<input name="semester" type="number" min="1" max="12"></label><p><button>Add subject</button></p></form>
+      ${table(['Code', 'Subject', 'Semester'], d.subjects.map((x) => `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${x.semester ?? '–'}</td></tr>`), 'No subjects yet.')}</div>
+    <div class="card"><h2>3. Faculty (${d.faculty.length})</h2>
+      <form id="ffac" class="row"><label>Full name<input name="name" required></label><label>Username<input name="username" required autocomplete="off"></label>
+        <label>Password (min 6)<input name="password" minlength="6" required autocomplete="off"></label><p><button>Add faculty</button></p></form>
+      ${table(['Name', 'Username', ''], d.faculty.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.username)}</td><td class="right">${reset(x)}</td></tr>`), 'No faculty yet.')}</div>
+    <div class="card"><h2>4. Students (${d.students.length})</h2>
+      <form id="fstu"><label>Section<select name="section_id" required><option value="">Choose section…</option>${d.sections.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>
+        <label>One student per line: <b>roll no, name, username, password</b><textarea name="lines" rows="5" placeholder="101, Student Name, student101, secret12" required></textarea></label>
+        <p><button>Add students</button></p></form>
+      ${table(['Section', 'Roll no', 'Name', 'Username', ''], d.students.map((x) => `<tr><td>${esc(x.section ?? '–')}</td><td>${esc(x.roll_no)}</td><td>${esc(x.name)}</td><td>${esc(x.username)}</td><td class="right">${reset(x)}</td></tr>`), 'No students yet.')}</div>`;
+
+  const post = (formId, path, build, done) => (document.getElementById(formId).onsubmit = act(async (e) => {
+    const r = await api('POST', path, build(e.target));
+    toast(done(r));
+    viewAdmin();
+  }));
+  const fields = (f) => Object.fromEntries(new FormData(f));
+  post('fsec', '/admin/sections', fields, () => 'Section added');
+  post('fsub', '/admin/subjects', fields, () => 'Subject added');
+  post('ffac', '/admin/faculty', fields, () => 'Faculty account created');
+  post('fstu', '/admin/students', (f) => ({
+    section_id: +f.section_id.value,
+    students: f.lines.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l, i) => {
       const p = l.split(',').map((x) => x.trim());
       if (p.length !== 4 || p.some((x) => !x)) throw new Error(`Line ${i + 1}: need roll no, name, username, password`);
       return { roll_no: p[0], name: p[1], username: p[2], password: p[3] };
-    });
-    const r = await api('POST', '/students', { students });
-    toast(`${r.added} student(s) added`);
-    viewStudents();
-  });
+    }),
+  }), (r) => `${r.added} student(s) added`);
+  app.querySelectorAll('[data-reset]').forEach((b) => (b.onclick = act(async () => {
+    const password = prompt(`New password for ${b.dataset.name} (min 6 characters):`);
+    if (!password) return;
+    await api('POST', `/admin/users/${b.dataset.reset}/password`, { password });
+    toast('Password changed');
+  })));
 }
 
-function viewNew() {
+async function viewNew() {
+  const seq = nav_seq;
+  const master = await api('GET', '/master');
+  if (seq !== nav_seq) return;
+  if (!master.subjects.length || !master.sections.length) {
+    app.innerHTML = '<div class="card"><h1>New assessment</h1><p>No subjects or sections are set up yet. Ask the admin to add them under Master data.</p><a class="btn" href="#/">Back</a></div>';
+    return;
+  }
   const local = (d) => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   const start = new Date();
   const end = new Date(Date.now() + 2 * 3600e3);
   app.innerHTML = `<h1>New assessment</h1>
     <form id="f">
     <div class="card"><h2>Details</h2>
-      <div class="row"><label>Subject name<input name="subject_name" required></label><label>Subject code<input name="subject_code" required></label></div>
+      <label>Subject<select name="subject_id" required><option value="">Choose subject…</option>${master.subjects.map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}${x.semester ? ` (Sem ${x.semester})` : ''}</option>`).join('')}</select></label>
+      <div class="muted small">Sections that will take this assessment</div>
+      <div class="checks">${master.sections.map((x) => `<label class="choice"><input type="checkbox" name="section" value="${x.id}"> ${esc(x.name)} <span class="muted small">(${x.students} students)</span></label>`).join('')}</div>
       <div class="row"><label>Type<select name="type"><option>Assignment</option><option>Sessional</option><option>Tutorial</option><option>MCQ Test</option></select></label>
         <label>Number<input name="number" type="number" min="1" value="1" required></label>
         <label>Duration (minutes)<input name="duration_min" type="number" min="1" max="600" value="60" required></label></div>
@@ -260,7 +296,7 @@ function viewNew() {
       };
     });
     const r = await api('POST', '/assessments', {
-      subject_name: f.subject_name.value, subject_code: f.subject_code.value, type: f.type.value,
+      subject_id: +f.subject_id.value, section_ids: [...f.querySelectorAll('[name=section]:checked')].map((x) => +x.value), type: f.type.value,
       number: +f.number.value, duration_min: +f.duration_min.value,
       start_at: new Date(f.start_at.value).toISOString(), end_at: new Date(f.end_at.value).toISOString(),
       release_mode: f.release_mode.value, questions,
@@ -283,10 +319,14 @@ async function viewAssessment(id) {
   const a = await api('GET', `/assessments/${id}`);
   if (seq !== nav_seq) return;
   const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
+  const sheet = await api('GET', `/assessments/${id}/marks`);
+  if (seq !== nav_seq) return;
   app.innerHTML = `<div class="between"><h1>${title(a)}</h1>
       ${a.status === 'draft' ? '<button id="pub">Publish to students</button>' : '<span class="pill ok">Published</span>'}</div>
     <div class="card"><div class="muted">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${num(total)} marks ·
-      Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b></div></div>
+      Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b></div>
+      <div class="muted">Sections: ${a.sections.length ? a.sections.map(esc).join(', ') : 'All students'}</div></div>
+    <div class="card" id="analysis"></div>
     <div class="card"><h2>Submissions</h2>
       ${a.attempts.length ? `<table><thead><tr><th>Roll no</th><th>Student</th><th>Status</th><th>Draft marks</th><th>Final</th><th>Tab switches</th><th>Paste tries</th><th></th></tr></thead><tbody>
       ${a.attempts.map((t) => `<tr><td>${esc(t.roll_no)}</td><td>${esc(t.name)}</td><td>${attemptPill(t)}${t.low ? ' <span class="pill warn">Low confidence</span>' : ''}</td>
@@ -296,12 +336,71 @@ async function viewAssessment(id) {
     <div class="card"><h2>Questions</h2>${a.questions.map((q) => `<div class="qbox"><div class="between"><h3>Q${q.seq}${q.co ? ` · ${esc(q.co)}` : ''}</h3><span class="pill">${num(q.max_marks)} marks</span></div>
       <div class="answer">${esc(q.text)}</div>${q.kind === 'mcq' ? optionList(q.options, '', q.correct_index).replace('<p class="muted small">Not attempted</p>', '')
         : `<div class="muted small">Rubric: ${q.rubric.map((r) => `${esc(r.criterion)} (${num(r.marks)})`).join(' · ')}</div>`}</div>`).join('')}</div>`;
+  drawAnalysis(document.getElementById('analysis'), a, sheet);
   const pub = document.getElementById('pub');
   if (pub) pub.onclick = act(async () => {
     await api('POST', `/assessments/${id}/publish`);
     toast('Published');
     viewAssessment(id);
   });
+}
+
+// Class analysis from published results only. The CO attainment target is the faculty's own setting, not a fixed rule.
+function drawAnalysis(box, a, sheet) {
+  const n = sheet.students.length;
+  if (!n) {
+    box.innerHTML = '<h2>Analysis</h2><p class="muted">Appears once at least one result is published.</p>';
+    return;
+  }
+  const qs = sheet.questions;
+  const maxTotal = qs.reduce((s, q) => s + q.max_marks, 0);
+  const totals = sheet.students.map((st) => qs.reduce((s, q) => s + (st.marks[q.id] ?? 0), 0));
+  const avg = (arr) => arr.reduce((s, x) => s + x, 0) / arr.length;
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const cos = [...new Set(qs.map((q) => q.co).filter(Boolean))].sort();
+
+  const coRows = (target) => cos.map((co) => {
+    const mine = qs.filter((q) => q.co === co);
+    const max = mine.reduce((s, q) => s + q.max_marks, 0);
+    const scores = sheet.students.map((st) => mine.reduce((s, q) => s + (st.marks[q.id] ?? 0), 0) / max);
+    const reached = scores.filter((x) => x * 100 >= target).length;
+    return `<tr><td>${esc(co)}</td><td>${mine.map((q) => `Q${q.seq}`).join(', ')}</td><td>${pct(avg(scores))}</td><td>${reached} of ${n} (${pct(reached / n)})</td></tr>`;
+  }).join('');
+
+  box.innerHTML = `<div class="between"><h2>Analysis <span class="muted small">(${n} published result${n > 1 ? 's' : ''})</span></h2><button class="ghost small" id="csv">Download marks (CSV)</button></div>
+    <div class="row stats"><div><div class="muted small">Class average</div><div class="score">${num(avg(totals))} / ${num(maxTotal)}</div></div>
+      <div><div class="muted small">Highest</div><div class="score">${num(Math.max(...totals))}</div></div>
+      <div><div class="muted small">Lowest</div><div class="score">${num(Math.min(...totals))}</div></div></div>
+    <h3>Question-wise</h3>
+    <table><thead><tr><th>Question</th><th>CO</th><th>Max</th><th>Average</th><th>Average %</th></tr></thead><tbody>${qs.map((q) => {
+      const m = avg(sheet.students.map((st) => st.marks[q.id] ?? 0));
+      return `<tr><td>Q${q.seq}</td><td>${esc(q.co || '–')}</td><td>${num(q.max_marks)}</td><td>${num(m)}</td><td>${pct(m / q.max_marks)}</td></tr>`;
+    }).join('')}</tbody></table>
+    ${cos.length ? `<h3 style="margin-top:14px">CO-wise <span class="muted small">· a student reaches a CO at <input id="target" type="number" min="1" max="100" value="60" style="display:inline-block;width:70px;margin:0 4px">% or more of its marks</span></h3>
+    <table><thead><tr><th>CO</th><th>Questions</th><th>Average %</th><th>Students at or above target</th></tr></thead><tbody id="cobody">${coRows(60)}</tbody></table>`
+      : '<p class="muted small">Add a CO to the questions to see CO-wise figures.</p>'}`;
+
+  const target = document.getElementById('target');
+  if (target) target.oninput = () => {
+    const t = +target.value;
+    if (t >= 1 && t <= 100) document.getElementById('cobody').innerHTML = coRows(t);
+  };
+  document.getElementById('csv').onclick = () => {
+    const cell = (v) => {
+      let x = String(v ?? '');
+      if (/^[=+\-@\t\r]/.test(x)) x = `'${x}`; // stop spreadsheet apps treating text as a formula
+      return `"${x.replace(/"/g, '""')}"`;
+    };
+    const lines = [
+      ['Section', 'Roll no', 'Name', ...qs.map((q) => `Q${q.seq}${q.co ? ` (${q.co})` : ''} /${q.max_marks}`), `Total /${maxTotal}`],
+      ...sheet.students.map((st, i) => [st.section, st.roll_no, st.name, ...qs.map((q) => st.marks[q.id] ?? 0), totals[i]]),
+    ].map((r) => r.map((v) => (typeof v === 'number' ? v : cell(v))).join(','));
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
+    link.download = `${a.subject_code}_${a.type}_${a.number}_marks.csv`.replace(/\s+/g, '_');
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
 }
 
 async function viewReview(id) {
@@ -499,9 +598,9 @@ async function route() {
     }
     drawNav();
     const [, page, id] = location.hash.split('/');
+    if (user.role === 'admin') return await viewAdmin();
     if (user.role === 'faculty') {
-      if (page === 'new') return viewNew();
-      if (page === 'students') return await viewStudents();
+      if (page === 'new') return await viewNew();
       if (page === 'a' && id) return await viewAssessment(+id);
       if (page === 'review' && id) return await viewReview(+id);
       return await viewFacultyHome();

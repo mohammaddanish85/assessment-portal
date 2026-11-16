@@ -58,3 +58,7 @@ ul.opts li.wrong-opt { background: var(--bad-bg); border-color: var(--bad); }
 .choice input, .rubric-row input[type=radio] { width: auto; flex: none; margin-top: 4px; }
 [hidden] { display: none !important; }
 .opt .rubric-row input:nth-child(2) { width: auto; flex: 1; }
+.checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; margin: 4px 0 12px; }
+.checks .choice { margin: 0; }
+.stats { margin-bottom: 14px; }
+form.row p { flex: 0 0 auto; align-self: flex-end; margin: 0 0 10px; }

@@ -2,13 +2,29 @@
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    role TEXT NOT NULL CHECK (role IN ('faculty','student')),
+    role TEXT NOT NULL CHECK (role IN ('admin','faculty','student')),
     name TEXT NOT NULL,
     username TEXT NOT NULL UNIQUE,
     roll_no TEXT,
     pw_hash TEXT NOT NULL,
     pw_salt TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    section_id INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS sections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+  )`,
+  `CREATE TABLE IF NOT EXISTS subjects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    semester INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS assessment_sections (
+    assessment_id INTEGER NOT NULL,
+    section_id INTEGER NOT NULL,
+    PRIMARY KEY (assessment_id, section_id)
   )`,
   `CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
@@ -80,6 +96,18 @@ export async function migrate(db) {
       db.prepare("ALTER TABLE questions ADD COLUMN kind TEXT NOT NULL DEFAULT 'descriptive'"),
       db.prepare('ALTER TABLE questions ADD COLUMN options_json TEXT'),
       db.prepare('ALTER TABLE questions ADD COLUMN correct_index INTEGER'),
+    ]);
+  }
+
+  // The allowed roles live in a CHECK constraint, so adding 'admin' means rebuilding the table.
+  if (!(await sqlOf('users')).includes("'admin'")) {
+    const create = SCHEMA.find((x) => x.includes('CREATE TABLE IF NOT EXISTS users'));
+    const cols = 'id, role, name, username, roll_no, pw_hash, pw_salt, created_at';
+    await db.batch([
+      db.prepare(create.replace('IF NOT EXISTS users', 'users_new')),
+      db.prepare(`INSERT INTO users_new (${cols}) SELECT ${cols} FROM users`),
+      db.prepare('DROP TABLE users'),
+      db.prepare('ALTER TABLE users_new RENAME TO users'),
     ]);
   }
 
