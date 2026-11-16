@@ -1,7 +1,7 @@
-import { SCHEMA } from './schema.js';
+import { SCHEMA, migrate } from './schema.js';
 import { evaluateAnswer } from './evaluator.js';
 
-const TYPES = ['Assignment', 'Sessional', 'Tutorial'];
+const TYPES = ['Assignment', 'Sessional', 'Tutorial', 'MCQ Test'];
 const SESSION_HOURS = 12;
 const GRACE_SECONDS = 60; // allowance for the final autosave / auto-submit after the deadline
 
@@ -40,6 +40,7 @@ let schemaReady = false;
 async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch(SCHEMA.map((sql) => env.DB.prepare(sql)));
+  await migrate(env.DB);
   schemaReady = true;
 }
 
@@ -85,9 +86,29 @@ async function createUser(env, { role, name, username, password, roll_no = null 
 
 // ---------- evaluation ----------
 
+// MCQ: checked against the answer key. No LLM involved, so the result is exact.
+function gradeMcq(r) {
+  const attempted = r.text !== '';
+  const correct = /^\d+$/.test(r.text) && Number(r.text) === r.correct_index;
+  const awarded = correct ? r.max_marks : 0;
+  return {
+    auto: true,
+    criteria: [{
+      criterion: 'Correct option',
+      max: r.max_marks,
+      awarded,
+      justification: !attempted ? 'Not attempted.' : correct ? 'Correct option selected.' : 'Wrong option selected.',
+    }],
+    total: awarded,
+    missing_points: [],
+    improvements: [],
+    confidence: 'high',
+  };
+}
+
 async function evaluateAttempt(env, attemptId) {
   const { results } = await env.DB.prepare(
-    `SELECT a.id, a.text, q.text AS qtext, q.max_marks, q.model_answer, q.rubric_json
+    `SELECT a.id, a.text, q.text AS qtext, q.max_marks, q.model_answer, q.rubric_json, q.kind, q.correct_index
      FROM answers a JOIN questions q ON q.id = a.question_id
      WHERE a.attempt_id = ? AND a.eval_status != 'done'`,
   )
@@ -97,13 +118,15 @@ async function evaluateAttempt(env, attemptId) {
   await Promise.all(
     results.map(async (r) => {
       try {
-        const out = await evaluateAnswer(env, {
-          question: r.qtext,
-          maxMarks: r.max_marks,
-          rubric: JSON.parse(r.rubric_json),
-          modelAnswer: r.model_answer,
-          answer: r.text,
-        });
+        const out = r.kind === 'mcq'
+          ? gradeMcq(r)
+          : await evaluateAnswer(env, {
+              question: r.qtext,
+              maxMarks: r.max_marks,
+              rubric: JSON.parse(r.rubric_json),
+              modelAnswer: r.model_answer,
+              answer: r.text,
+            });
         await env.DB.prepare(
           `UPDATE answers SET eval_status='done', eval_error=NULL, llm_marks=?, llm_json=?, llm_confidence=? WHERE id=?`,
         )
@@ -289,7 +312,9 @@ async function handle(request, env, ctx) {
     const end = new Date(b.end_at);
     if (isNaN(start) || isNaN(end) || end <= start) fail(400, 'Window end must be after window start');
     // Sessional marks are official internal marks: they are never released without faculty approval.
-    const release = type !== 'Sessional' && b.release_mode === 'instant' ? 'instant' : 'after_approval';
+    // An MCQ Test is checked against the key, so its result is always released on submit.
+    const release = type === 'MCQ Test' ? 'instant'
+      : type !== 'Sessional' && b.release_mode === 'instant' ? 'instant' : 'after_approval';
     if (!Array.isArray(b.questions) || !b.questions.length) fail(400, 'Add at least one question');
     if (b.questions.length > 30) fail(400, 'At most 30 questions');
 
@@ -297,6 +322,16 @@ async function handle(request, env, ctx) {
       const label = `Question ${i + 1}`;
       const max = Number(q.max_marks);
       if (!(max > 0 && max <= 100)) fail(400, `${label}: invalid max marks`);
+      const co = typeof q.co === 'string' ? q.co.trim().slice(0, 20) : '';
+      if (q.kind === 'mcq') {
+        if (!Array.isArray(q.options) || q.options.length < 2 || q.options.length > 6) fail(400, `${label}: give 2 to 6 options`);
+        const options = q.options.map((o) => str(o, `${label} option`, 500));
+        if (!Number.isInteger(q.correct_index) || q.correct_index < 0 || q.correct_index >= options.length) {
+          fail(400, `${label}: mark the correct option`);
+        }
+        return { kind: 'mcq', text: str(q.text, `${label} text`, 5000), max, co, model: '', rubric: [], options, correct: q.correct_index };
+      }
+      if (type === 'MCQ Test') fail(400, `${label}: an MCQ Test can contain only MCQ questions`);
       if (!Array.isArray(q.rubric) || !q.rubric.length) fail(400, `${label}: add at least one rubric criterion`);
       const rubric = q.rubric.map((r) => {
         const marks = Number(r.marks);
@@ -306,11 +341,14 @@ async function handle(request, env, ctx) {
       const sum = rubric.reduce((s, r) => s + r.marks, 0);
       if (Math.abs(sum - max) > 1e-9) fail(400, `${label}: rubric marks add up to ${sum}, but max marks is ${max}`);
       return {
+        kind: 'descriptive',
         text: str(q.text, `${label} text`, 5000),
         max,
-        co: typeof q.co === 'string' ? q.co.trim().slice(0, 20) : '',
+        co,
         model: str(q.model_answer, `${label} model answer`, 8000),
         rubric,
+        options: null,
+        correct: null,
       };
     });
 
@@ -325,8 +363,10 @@ async function handle(request, env, ctx) {
     await env.DB.batch(
       questions.map((q, i) =>
         env.DB.prepare(
-          'INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json) VALUES (?,?,?,?,?,?,?)',
-        ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric)),
+          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric), q.kind,
+          q.options ? JSON.stringify(q.options) : null, q.correct),
       ),
     );
     return json({ id });
@@ -349,7 +389,13 @@ async function handle(request, env, ctx) {
       .all();
     return json({
       ...a,
-      questions: qs.results.map((q) => ({ ...q, rubric: JSON.parse(q.rubric_json), rubric_json: undefined })),
+      questions: qs.results.map((q) => ({
+        ...q,
+        rubric: JSON.parse(q.rubric_json),
+        options: q.options_json ? JSON.parse(q.options_json) : null,
+        rubric_json: undefined,
+        options_json: undefined,
+      })),
       attempts: at.results,
     });
   }
@@ -368,12 +414,21 @@ async function handle(request, env, ctx) {
     const t = await ownAttemptAsFaculty(+m[1]);
     const { results } = await env.DB.prepare(
       `SELECT a.id, a.text, a.eval_status, a.eval_error, a.llm_marks, a.llm_json, a.llm_confidence, a.final_marks, a.faculty_remark,
-              q.seq, q.text AS qtext, q.max_marks, q.co, q.model_answer
+              q.seq, q.text AS qtext, q.max_marks, q.co, q.model_answer, q.kind, q.options_json, q.correct_index
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
       .bind(t.id)
       .all();
-    return json({ ...t, answers: results.map((r) => ({ ...r, llm: r.llm_json ? JSON.parse(r.llm_json) : null, llm_json: undefined })) });
+    return json({
+      ...t,
+      answers: results.map((r) => ({
+        ...r,
+        llm: r.llm_json ? JSON.parse(r.llm_json) : null,
+        options: r.options_json ? JSON.parse(r.options_json) : null,
+        llm_json: undefined,
+        options_json: undefined,
+      })),
+    });
   }
 
   if ((m = route('POST', /^\/api\/attempts\/(\d+)\/evaluate$/))) {
@@ -425,13 +480,13 @@ async function handle(request, env, ctx) {
     return json(results);
   }
 
-  // Start (or resume) an attempt. Model answers and rubrics are never sent to the student here.
+  // Start (or resume) an attempt. Model answers, rubrics and MCQ answer keys are never sent to the student here.
   if ((m = route('POST', /^\/api\/assessments\/(\d+)\/start$/))) {
     student();
     const a = await env.DB.prepare(`SELECT * FROM assessments WHERE id = ? AND status='published'`).bind(+m[1]).first();
     if (!a) fail(404, 'Assessment not found');
     let t = await env.DB.prepare('SELECT * FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(a.id, user.id).first();
-    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
+    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
     if (!t) {
       const t0 = Date.now();
       if (t0 < Date.parse(a.start_at)) fail(403, 'This assessment has not started yet');
@@ -456,7 +511,11 @@ async function handle(request, env, ctx) {
       deadline_at: t.deadline_at,
       server_now: now(),
       assessment: { subject_name: a.subject_name, subject_code: a.subject_code, type: a.type, number: a.number },
-      questions: qs.results.map((q) => ({ ...q, answer: text.get(q.id) || '' })),
+      questions: qs.results.map((q) => ({
+        id: q.id, seq: q.seq, text: q.text, max_marks: q.max_marks, kind: q.kind,
+        options: q.options_json ? JSON.parse(q.options_json) : null,
+        answer: text.get(q.id) || '',
+      })),
     });
   }
 
@@ -492,8 +551,17 @@ async function handle(request, env, ctx) {
     if (t.status !== 'in_progress') fail(409, 'This attempt is already submitted');
     const savedLast = await saveAnswers(t, await body(request)); // late => last autosaved answers stand
     await env.DB.prepare(`UPDATE attempts SET status='submitted', submitted_at = ? WHERE id = ?`).bind(now(), t.id).run();
-    ctx.waitUntil(evaluateAttempt(env, t.id).catch((e) => console.error('evaluation failed', e)));
-    return json({ ok: true, late: !savedLast });
+    const typed = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM questions WHERE assessment_id = ? AND kind != 'mcq'`,
+    ).bind(t.assessment_id).first();
+    if (typed.n === 0) {
+      // Only MCQs: no LLM call needed, so grade before replying and the result is ready at once.
+      await evaluateAttempt(env, t.id);
+    } else {
+      ctx.waitUntil(evaluateAttempt(env, t.id).catch((e) => console.error('evaluation failed', e)));
+    }
+    const after = await env.DB.prepare('SELECT status FROM attempts WHERE id = ?').bind(t.id).first();
+    return json({ ok: true, late: !savedLast, published: after.status === 'published' });
   }
 
   // Result is visible only after it has been published (faculty approval, or instant mode).
@@ -503,7 +571,8 @@ async function handle(request, env, ctx) {
     if (t.status !== 'published') return json({ published: false, status: t.status });
     const a = await env.DB.prepare('SELECT subject_name, subject_code, type, number FROM assessments WHERE id = ?').bind(t.assessment_id).first();
     const { results } = await env.DB.prepare(
-      `SELECT q.seq, q.text AS qtext, q.max_marks, a.text, a.final_marks, a.llm_marks, a.llm_json, a.faculty_remark
+      `SELECT q.seq, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
+              a.text, a.final_marks, a.llm_marks, a.llm_json, a.faculty_remark
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
       .bind(t.id)
@@ -517,8 +586,11 @@ async function handle(request, env, ctx) {
         const moderated = r.llm_marks === null || Math.abs(r.final_marks - r.llm_marks) > 1e-9;
         return {
           seq: r.seq,
+          kind: r.kind,
           question: r.qtext,
           answer: r.text,
+          options: r.options_json ? JSON.parse(r.options_json) : null,
+          correct_index: r.kind === 'mcq' ? r.correct_index : null,
           max_marks: r.max_marks,
           marks: r.final_marks,
           moderated,

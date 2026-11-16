@@ -20,7 +20,7 @@ export const SCHEMA = [
     faculty_id INTEGER NOT NULL,
     subject_name TEXT NOT NULL,
     subject_code TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('Assignment','Sessional','Tutorial')),
+    type TEXT NOT NULL CHECK (type IN ('Assignment','Sessional','Tutorial','MCQ Test')),
     number INTEGER NOT NULL,
     duration_min INTEGER NOT NULL,
     start_at TEXT NOT NULL,
@@ -37,7 +37,10 @@ export const SCHEMA = [
     max_marks REAL NOT NULL,
     co TEXT,
     model_answer TEXT NOT NULL,
-    rubric_json TEXT NOT NULL
+    rubric_json TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'descriptive',
+    options_json TEXT,
+    correct_index INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,3 +70,27 @@ export const SCHEMA = [
     UNIQUE (attempt_id, question_id)
   )`,
 ];
+
+// Upgrades for databases created by an earlier version (run once per Worker start, safe to repeat).
+export async function migrate(db) {
+  const sqlOf = async (t) => (await db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(t).first())?.sql || '';
+
+  if (!(await sqlOf('questions')).includes('correct_index')) {
+    await db.batch([
+      db.prepare("ALTER TABLE questions ADD COLUMN kind TEXT NOT NULL DEFAULT 'descriptive'"),
+      db.prepare('ALTER TABLE questions ADD COLUMN options_json TEXT'),
+      db.prepare('ALTER TABLE questions ADD COLUMN correct_index INTEGER'),
+    ]);
+  }
+
+  // The allowed assessment types live in a CHECK constraint, which SQLite can only change by rebuilding the table.
+  if (!(await sqlOf('assessments')).includes('MCQ Test')) {
+    const create = SCHEMA.find((x) => x.includes('CREATE TABLE IF NOT EXISTS assessments'));
+    await db.batch([
+      db.prepare(create.replace('IF NOT EXISTS assessments', 'assessments_new')),
+      db.prepare('INSERT INTO assessments_new SELECT * FROM assessments'),
+      db.prepare('DROP TABLE assessments'),
+      db.prepare('ALTER TABLE assessments_new RENAME TO assessments'),
+    ]);
+  }
+}

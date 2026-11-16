@@ -49,3 +49,12 @@ ul.tight { margin: 4px 0 10px; padding-left: 20px; }
 #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 18px;
   border-radius: 8px; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90vw; }
 #toast.show { opacity: 1; } #toast.bad { background: var(--bad); }
+ul.opts { list-style: none; margin: 6px 0 10px; padding: 0; }
+ul.opts li { padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; margin-bottom: 5px; }
+ul.opts li.right-opt { background: var(--ok-bg); border-color: var(--ok); }
+ul.opts li.wrong-opt { background: var(--bad-bg); border-color: var(--bad); }
+.choice { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; color: var(--ink); padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; margin-bottom: 6px; cursor: pointer; }
+.choice:hover { background: var(--bg); }
+.choice input, .rubric-row input[type=radio] { width: auto; flex: none; margin-top: 4px; }
+[hidden] { display: none !important; }
+.opt .rubric-row input:nth-child(2) { width: auto; flex: 1; }

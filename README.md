@@ -10,6 +10,8 @@ approves or moderates before the result is released.
   window, duration, questions, CO, model answer, rubric), publish, review each submission, edit marks, approve.
 - **Student:** timed attempt with autosave, paste blocked, tab switches recorded, result with marks,
   rubric breakdown, missing points and improvement suggestions.
+- **MCQ:** any question can be an MCQ (2 to 6 options, one correct), checked against the answer key without the LLM.
+  The "MCQ Test" assessment type allows only MCQs and shows the result the moment the student submits.
 - **Result release:** Sessional results always wait for faculty approval. Assignments and Tutorials can be set
   to "Instant", which releases right after evaluation unless the model is unsure about any answer.
 - **Evaluation providers** (`EVAL_PROVIDER` in `wrangler.jsonc`):
