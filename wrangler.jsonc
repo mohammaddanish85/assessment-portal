@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "assessment-portal",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "assessment-portal",
+      // Create the D1 database (dashboard or `npx wrangler d1 create assessment-portal`)
+      // and paste its ID here. Tables are created automatically on first visit.
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+  "ai": { "binding": "AI" },
+  "vars": {
+    // "workers-ai"        -> Cloudflare Workers AI (POC, free daily allocation)
+    // "openai-compatible" -> any OpenAI-style endpoint, e.g. a model on the college server
+    // "mock"              -> offline dummy scorer, for UI testing only
+    "EVAL_PROVIDER": "workers-ai",
+    "WORKERS_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "LLM_BASE_URL": "",
+    "LLM_MODEL": ""
+  },
+  "observability": { "enabled": true }
+}

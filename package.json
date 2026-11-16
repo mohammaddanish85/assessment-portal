@@ -1,0 +1,14 @@
+{
+  "name": "assessment-portal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LLM-assisted online assessment portal (POC) - assignments, sessionals, tutorials",
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:mock": "wrangler dev -c wrangler.local.jsonc",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}
