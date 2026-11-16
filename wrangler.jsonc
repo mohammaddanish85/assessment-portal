@@ -11,10 +11,10 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "assessment-portal",
-      // Create the D1 database (dashboard or `npx wrangler d1 create assessment-portal`)
-      // and paste its ID here. Tables are created automatically on first visit.
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+      // No database_id here on purpose: the first deploy creates the D1 database on your
+      // Cloudflare account automatically, and later deploys keep using the same one.
+      // Tables are created by the app itself on first visit.
+      "database_name": "assessment-portal"
     }
   ],
   "ai": { "binding": "AI" },

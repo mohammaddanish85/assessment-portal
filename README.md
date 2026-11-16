@@ -39,14 +39,22 @@ Open http://localhost:8787. Marks come from the mock scorer and are labelled `[M
 
 ## Deploy on Cloudflare
 
+**From the dashboard (no commands):** Workers & Pages > Create application > import this GitHub repository,
+keep the default deploy command `npx wrangler deploy`, and deploy. Every later push to `main` redeploys.
+
+**From a terminal:**
+
 ```
+npm install
 npx wrangler login
-npx wrangler d1 create assessment-portal     # copy the database_id into wrangler.jsonc
 npx wrangler deploy
 ```
 
-Tables are created automatically on the first visit. The first visitor is asked to create the admin account,
-so open the site and complete setup immediately after deploying.
+The D1 database is created automatically on the first deploy and the tables on the first visit. The first visitor
+is asked to create the admin account, so open the site and complete setup immediately after deploying.
+
+If the deploy stops with a message about the D1 database, create it once (`npx wrangler d1 create assessment-portal`)
+and add the printed `database_id` next to `database_name` in `wrangler.jsonc`.
 
 ## Layout
 
