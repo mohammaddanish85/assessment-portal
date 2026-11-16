@@ -62,3 +62,36 @@ ul.opts li.wrong-opt { background: var(--bad-bg); border-color: var(--bad); }
 .checks .choice { margin: 0; }
 .stats { margin-bottom: 14px; }
 form.row p { flex: 0 0 auto; align-self: flex-end; margin: 0 0 10px; }
+
+/* ---- printable documents ---- */
+.downloads { margin: 12px 0 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.downloads .btn { padding: 5px 12px; font-size: 13px; }
+.printbar { margin-bottom: 14px; }
+.print-only { display: none; }
+.nowrap { white-space: nowrap; }
+.paper { background: #fff; border: 1px solid var(--line); padding: 28px 32px; font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #000; }
+.paper h1 { font-size: 18px; text-align: center; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 14px; }
+.paper h2 { font-size: 14px; margin: 16px 0 6px; }
+.paper h3 { font-size: 13px; margin: 0 0 6px; }
+.paper table { margin-bottom: 10px; }
+.paper th, .paper td { border: 1px solid #000; padding: 5px 7px; }
+.paper th { background: #d9d9d9; color: #000; text-transform: none; letter-spacing: 0; font-size: 12px; }
+.paper table.meta th { width: 19%; }
+.paper .answer { background: #fff; border-color: #000; border-radius: 0; }
+.paper .qblock { margin: 14px 0; break-inside: avoid; }
+.paper ul.opts li { border-radius: 0; padding: 4px 8px; }
+.paper .sign { margin-top: 40px; }
+.paper .genline { margin-top: 18px; font-size: 10px; color: #555; }
+.paper .doc + .doc { margin-top: 40px; padding-top: 30px; border-top: 2px dashed var(--line); }
+@page { size: A4; margin: 15mm; }
+@media print {
+  .top, .no-print, #toast { display: none !important; }
+  .print-only { display: block; }
+  body { background: #fff; font-family: Arial, Helvetica, sans-serif; }
+  main { max-width: none; margin: 0; padding: 0; }
+  .paper { border: 0; padding: 0; }
+  .paper .doc + .doc { break-before: page; margin-top: 0; padding-top: 0; border-top: 0; }
+  .card { border: 1px solid #999; break-inside: avoid; }
+  tr { break-inside: avoid; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

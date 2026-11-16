@@ -18,6 +18,8 @@ approves or moderates before the result is released.
   to "Instant", which releases right after evaluation unless the model is unsure about any answer.
 - **Analysis (published results only):** class average, highest, lowest, question-wise average, CO-wise average and
   count of students at or above a target the faculty sets, and a marks download (CSV, opens in Excel).
+- **Documents for records:** print-ready A4 pages for the assessment report, question paper, paper with answer key
+  and rubric, and evaluated answer sheets (one student or the whole class). Use "Print / Save as PDF" on the page.
 - **Evaluation providers** (`EVAL_PROVIDER` in `wrangler.jsonc`):
   - `workers-ai`: Cloudflare Workers AI (default)
   - `openai-compatible`: any OpenAI-style endpoint, e.g. a model on the college server

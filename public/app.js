@@ -5,6 +5,7 @@ const nav = document.getElementById('nav');
 let user = null;
 let provider = '';
 let cleanup = null; // set by the attempt screen (timer, listeners)
+let coTarget = 60; // CO target % chosen by the faculty on the analysis card; reused in the printed report
 let nav_seq = 0; // bumped on every navigation, so a slow page load cannot overwrite a newer screen
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -12,14 +13,15 @@ const fmt = (iso) => new Date(iso).toLocaleString([], { dateStyle: 'medium', tim
 const num = (n) => (n === null || n === undefined ? '–' : String(+(+n).toFixed(2)));
 const title = (a) => `${esc(a.type)} ${esc(a.number)} · ${esc(a.subject_name)} (${esc(a.subject_code)})`;
 
-// MCQ options as a list. `chosen` is the student's stored answer ('' or an index), `correct` the key (or null to hide it).
+// MCQ options as a list. `chosen` is the student's stored answer ('' or an index), or null when no student is involved
+// (question paper). `correct` is the key, or null to hide it.
 function optionList(options, chosen, correct) {
-  const attempted = /^\d+$/.test(chosen);
+  const attempted = chosen !== null && /^\d+$/.test(chosen);
   return `<ul class="opts">${options.map((o, i) => {
     const picked = attempted && +chosen === i;
     const cls = correct === i ? 'right-opt' : picked ? 'wrong-opt' : '';
     return `<li class="${cls}">${String.fromCharCode(65 + i)}. ${esc(o)}${picked ? ' <span class="pill">Selected</span>' : ''}${correct === i ? ' <span class="pill ok">Correct</span>' : ''}</li>`;
-  }).join('')}</ul>${attempted ? '' : '<p class="muted small">Not attempted</p>'}`;
+  }).join('')}</ul>${attempted || chosen === null ? '' : '<p class="muted small">Not attempted</p>'}`;
 }
 
 function toast(msg, bad = false) {
@@ -325,7 +327,10 @@ async function viewAssessment(id) {
       ${a.status === 'draft' ? '<button id="pub">Publish to students</button>' : '<span class="pill ok">Published</span>'}</div>
     <div class="card"><div class="muted">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${num(total)} marks ·
       Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b></div>
-      <div class="muted">Sections: ${a.sections.length ? a.sections.map(esc).join(', ') : 'All students'}</div></div>
+      <div class="muted">Sections: ${a.sections.length ? a.sections.map(esc).join(', ') : 'All students'}</div>
+      <p class="downloads"><b class="small">Download for records:</b> <a class="btn ghost" href="#/print/report/${a.id}">Assessment report</a>
+        <a class="btn ghost" href="#/print/paper/${a.id}">Question paper</a> <a class="btn ghost" href="#/print/key/${a.id}">Paper with answer key and rubric</a>
+        <a class="btn ghost" href="#/print/sheets/${a.id}">All evaluated answer sheets</a></p></div>
     <div class="card" id="analysis"></div>
     <div class="card"><h2>Submissions</h2>
       ${a.attempts.length ? `<table><thead><tr><th>Roll no</th><th>Student</th><th>Status</th><th>Draft marks</th><th>Final</th><th>Tab switches</th><th>Paste tries</th><th></th></tr></thead><tbody>
@@ -334,7 +339,7 @@ async function viewAssessment(id) {
         <td class="right">${t.status === 'in_progress' ? '' : `<a class="btn ghost" href="#/review/${t.id}">Review</a>`}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No student has started yet.</p>'}</div>
     <div class="card"><h2>Questions</h2>${a.questions.map((q) => `<div class="qbox"><div class="between"><h3>Q${q.seq}${q.co ? ` · ${esc(q.co)}` : ''}</h3><span class="pill">${num(q.max_marks)} marks</span></div>
-      <div class="answer">${esc(q.text)}</div>${q.kind === 'mcq' ? optionList(q.options, '', q.correct_index).replace('<p class="muted small">Not attempted</p>', '')
+      <div class="answer">${esc(q.text)}</div>${q.kind === 'mcq' ? optionList(q.options, null, q.correct_index)
         : `<div class="muted small">Rubric: ${q.rubric.map((r) => `${esc(r.criterion)} (${num(r.marks)})`).join(' · ')}</div>`}</div>`).join('')}</div>`;
   drawAnalysis(document.getElementById('analysis'), a, sheet);
   const pub = document.getElementById('pub');
@@ -345,20 +350,19 @@ async function viewAssessment(id) {
   });
 }
 
-// Class analysis from published results only. The CO attainment target is the faculty's own setting, not a fixed rule.
-function drawAnalysis(box, a, sheet) {
+// Figures shared by the analysis card and the printed report. Uses published results only.
+function analyse(sheet) {
   const n = sheet.students.length;
-  if (!n) {
-    box.innerHTML = '<h2>Analysis</h2><p class="muted">Appears once at least one result is published.</p>';
-    return;
-  }
   const qs = sheet.questions;
   const maxTotal = qs.reduce((s, q) => s + q.max_marks, 0);
   const totals = sheet.students.map((st) => qs.reduce((s, q) => s + (st.marks[q.id] ?? 0), 0));
   const avg = (arr) => arr.reduce((s, x) => s + x, 0) / arr.length;
   const pct = (x) => `${Math.round(x * 100)}%`;
   const cos = [...new Set(qs.map((q) => q.co).filter(Boolean))].sort();
-
+  const qRows = () => qs.map((q) => {
+    const m = avg(sheet.students.map((st) => st.marks[q.id] ?? 0));
+    return `<tr><td>Q${q.seq}</td><td>${esc(q.co || '–')}</td><td>${num(q.max_marks)}</td><td>${num(m)}</td><td>${pct(m / q.max_marks)}</td></tr>`;
+  }).join('');
   const coRows = (target) => cos.map((co) => {
     const mine = qs.filter((q) => q.co === co);
     const max = mine.reduce((s, q) => s + q.max_marks, 0);
@@ -366,24 +370,32 @@ function drawAnalysis(box, a, sheet) {
     const reached = scores.filter((x) => x * 100 >= target).length;
     return `<tr><td>${esc(co)}</td><td>${mine.map((q) => `Q${q.seq}`).join(', ')}</td><td>${pct(avg(scores))}</td><td>${reached} of ${n} (${pct(reached / n)})</td></tr>`;
   }).join('');
+  return { n, qs, maxTotal, totals, avg, cos, qRows, coRows };
+}
+
+// Class analysis from published results only. The CO attainment target is the faculty's own setting, not a fixed rule.
+function drawAnalysis(box, a, sheet) {
+  const n = sheet.students.length;
+  if (!n) {
+    box.innerHTML = '<h2>Analysis</h2><p class="muted">Appears once at least one result is published.</p>';
+    return;
+  }
+  const { qs, maxTotal, totals, avg, cos, qRows, coRows } = analyse(sheet);
 
   box.innerHTML = `<div class="between"><h2>Analysis <span class="muted small">(${n} published result${n > 1 ? 's' : ''})</span></h2><button class="ghost small" id="csv">Download marks (CSV)</button></div>
     <div class="row stats"><div><div class="muted small">Class average</div><div class="score">${num(avg(totals))} / ${num(maxTotal)}</div></div>
       <div><div class="muted small">Highest</div><div class="score">${num(Math.max(...totals))}</div></div>
       <div><div class="muted small">Lowest</div><div class="score">${num(Math.min(...totals))}</div></div></div>
     <h3>Question-wise</h3>
-    <table><thead><tr><th>Question</th><th>CO</th><th>Max</th><th>Average</th><th>Average %</th></tr></thead><tbody>${qs.map((q) => {
-      const m = avg(sheet.students.map((st) => st.marks[q.id] ?? 0));
-      return `<tr><td>Q${q.seq}</td><td>${esc(q.co || '–')}</td><td>${num(q.max_marks)}</td><td>${num(m)}</td><td>${pct(m / q.max_marks)}</td></tr>`;
-    }).join('')}</tbody></table>
-    ${cos.length ? `<h3 style="margin-top:14px">CO-wise <span class="muted small">· a student reaches a CO at <input id="target" type="number" min="1" max="100" value="60" style="display:inline-block;width:70px;margin:0 4px">% or more of its marks</span></h3>
-    <table><thead><tr><th>CO</th><th>Questions</th><th>Average %</th><th>Students at or above target</th></tr></thead><tbody id="cobody">${coRows(60)}</tbody></table>`
+    <table><thead><tr><th>Question</th><th>CO</th><th>Max</th><th>Average</th><th>Average %</th></tr></thead><tbody>${qRows()}</tbody></table>
+    ${cos.length ? `<h3 style="margin-top:14px">CO-wise <span class="muted small">· a student reaches a CO at <input id="target" type="number" min="1" max="100" value="${coTarget}" style="display:inline-block;width:70px;margin:0 4px">% or more of its marks</span></h3>
+    <table><thead><tr><th>CO</th><th>Questions</th><th>Average %</th><th>Students at or above target</th></tr></thead><tbody id="cobody">${coRows(coTarget)}</tbody></table>`
       : '<p class="muted small">Add a CO to the questions to see CO-wise figures.</p>'}`;
 
   const target = document.getElementById('target');
   if (target) target.oninput = () => {
     const t = +target.value;
-    if (t >= 1 && t <= 100) document.getElementById('cobody').innerHTML = coRows(t);
+    if (t >= 1 && t <= 100) document.getElementById('cobody').innerHTML = coRows((coTarget = t));
   };
   document.getElementById('csv').onclick = () => {
     const cell = (v) => {
@@ -408,7 +420,7 @@ async function viewReview(id) {
   const t = await api('GET', `/attempts/${id}`);
   if (seq !== nav_seq) return;
   const pending = t.answers.some((a) => a.eval_status !== 'done');
-  app.innerHTML = `<p><a href="#/a/${t.assessment_id}">← Back to submissions</a></p>
+  app.innerHTML = `<p class="between"><a href="#/a/${t.assessment_id}">← Back to submissions</a><a class="btn ghost" href="#/print/sheet/${t.id}">Download this answer sheet</a></p>
     <div class="between"><h1>${esc(t.student_name)} <span class="muted">(${esc(t.roll_no)})</span></h1>${attemptPill({ ...t, failed: t.answers.some((a) => a.eval_status === 'failed') })}</div>
     <p class="muted">${title(t)} · Tab switches: ${t.tab_switches} · Paste attempts: ${t.paste_attempts}</p>
     ${pending ? '<div class="note warn">Some answers are not evaluated yet. <button class="small" id="rerun">Run evaluation now</button></div>' : ''}
@@ -444,6 +456,92 @@ async function viewReview(id) {
     toast('Result published to the student');
     location.hash = `#/a/${t.assessment_id}`;
   });
+}
+
+// ---------- printable documents (faculty) ----------
+// Each page is laid out for A4. "Print / Save as PDF" opens the browser's print dialog, where
+// "Save as PDF" gives a file for the course file or accreditation records.
+
+function answerSheet(t) {
+  const final = t.status === 'published';
+  const got = t.answers.reduce((s, a) => s + ((final ? a.final_marks : a.llm_marks) ?? 0), 0);
+  const max = t.answers.reduce((s, a) => s + a.max_marks, 0);
+  return `<section class="doc"><h1>Evaluated Answer Sheet</h1>
+    <table class="meta"><tbody><tr><th>Assessment</th><td>${title(t)}</td><th>Student</th><td>${esc(t.student_name)}</td></tr>
+      <tr><th>Submitted</th><td>${t.submitted_at ? fmt(t.submitted_at) : '–'}</td><th>Roll no</th><td>${esc(t.roll_no)}</td></tr>
+      <tr><th>${final ? 'Marks awarded' : 'Draft marks'}</th><td><b>${num(got)} / ${num(max)}</b>${final ? '' : ' (not yet approved by faculty)'}</td><th>Tab switches / paste tries</th><td>${t.tab_switches} / ${t.paste_attempts}</td></tr></tbody></table>
+    ${t.answers.map((a) => {
+      const marks = final ? a.final_marks : a.llm_marks;
+      const moderated = final && a.llm_marks !== null && Math.abs(a.final_marks - a.llm_marks) > 1e-9;
+      return `<div class="qblock"><div class="between"><h3>Q${a.seq}${a.co ? ` (${esc(a.co)})` : ''}. ${esc(a.qtext)}</h3><b class="nowrap">${num(marks)} / ${num(a.max_marks)}</b></div>
+        ${a.kind === 'mcq' ? optionList(a.options, a.text, a.correct_index) : `<div class="answer">${a.text.trim() ? esc(a.text) : 'Not attempted'}</div>`}
+        ${a.kind !== 'mcq' && a.llm ? `<table><thead><tr><th>Rubric criterion</th><th>${moderated ? 'Draft marks' : 'Marks'}</th><th>Justification</th></tr></thead><tbody>${a.llm.criteria.map((c) => `<tr><td>${esc(c.criterion)}</td><td class="nowrap">${num(c.awarded)} / ${num(c.max)}</td><td>${esc(c.justification)}</td></tr>`).join('')}</tbody></table>
+          ${moderated ? `<p class="small">Draft total ${num(a.llm_marks)} was moderated by the faculty to ${num(a.final_marks)}.</p>` : ''}
+          ${a.llm.missing_points.length ? `<p class="small"><b>Missing points:</b> ${a.llm.missing_points.map(esc).join('; ')}</p>` : ''}
+          ${a.llm.improvements.length ? `<p class="small"><b>Suggested improvements:</b> ${a.llm.improvements.map(esc).join('; ')}</p>` : ''}` : ''}
+        ${a.faculty_remark ? `<p class="small"><b>Faculty remark:</b> ${esc(a.faculty_remark)}</p>` : ''}</div>`;
+    }).join('')}
+    <p class="sign">Faculty signature: ____________________</p></section>`;
+}
+
+async function viewPrint(kind, id) {
+  const seq = nav_seq;
+  let html = '';
+  let back = `#/a/${id}`;
+  const meta = (a, total) => `<table class="meta"><tbody>
+      <tr><th>Subject</th><td>${esc(a.subject_name)} (${esc(a.subject_code)})</td><th>Assessment</th><td>${esc(a.type)} ${esc(a.number)}</td></tr>
+      <tr><th>Sections</th><td>${a.sections.length ? a.sections.map(esc).join(', ') : 'All students'}</td><th>Maximum marks</th><td>${num(total)}</td></tr>
+      <tr><th>Window</th><td>${fmt(a.start_at)} to ${fmt(a.end_at)}</td><th>Duration</th><td>${a.duration_min} minutes</td></tr></tbody></table>`;
+
+  if (kind === 'sheet') {
+    const t = await api('GET', `/attempts/${id}`);
+    back = `#/review/${id}`;
+    html = answerSheet(t);
+  } else {
+    const a = await api('GET', `/assessments/${id}`);
+    const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
+    if (kind === 'paper' || kind === 'key') {
+      const key = kind === 'key';
+      html = `<section class="doc"><h1>${key ? 'Question Paper with Answer Key and Rubric' : 'Question Paper'}</h1>${meta(a, total)}
+        ${a.questions.map((q) => `<div class="qblock"><div class="between"><h3>Q${q.seq}. ${esc(q.text)}</h3><b class="nowrap">[${num(q.max_marks)}]${q.co ? ` ${esc(q.co)}` : ''}</b></div>
+          ${q.kind === 'mcq' ? optionList(q.options, null, key ? q.correct_index : null)
+            : key ? `<p class="small"><b>Model answer / key points:</b></p><div class="answer">${esc(q.model_answer)}</div>
+              <table><thead><tr><th>Rubric criterion</th><th>Marks</th></tr></thead><tbody>${q.rubric.map((r) => `<tr><td>${esc(r.criterion)}</td><td>${num(r.marks)}</td></tr>`).join('')}</tbody></table>` : ''}</div>`).join('')}
+        ${key ? `<p class="sign">Faculty: ${esc(user.name)} &nbsp; Signature: ____________________</p>` : ''}</section>`;
+    } else if (kind === 'sheets') {
+      const done = a.attempts.filter((t) => t.status === 'published');
+      const sheets = [];
+      for (const t of done) {
+        sheets.push(answerSheet(await api('GET', `/attempts/${t.id}`)));
+        if (seq !== nav_seq) return;
+      }
+      html = sheets.join('') || '<section class="doc"><h1>Evaluated Answer Sheets</h1><p>No results are published yet.</p></section>';
+    } else {
+      const sheet = await api('GET', `/assessments/${id}/marks`);
+      const x = analyse(sheet);
+      const started = a.attempts.length;
+      const submitted = a.attempts.filter((t) => t.status !== 'in_progress').length;
+      html = `<section class="doc"><h1>Assessment Report</h1>${meta(a, total)}
+        <table class="meta"><tbody><tr><th>Faculty</th><td>${esc(user.name)}</td><th>Result release</th><td>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</td></tr>
+          <tr><th>Students started / submitted</th><td>${started} / ${submitted}</td><th>Results published</th><td>${x.n}</td></tr></tbody></table>
+        ${x.n ? `<h2>1. Class performance</h2>
+          <table><thead><tr><th>Class average</th><th>Highest</th><th>Lowest</th></tr></thead><tbody><tr><td>${num(x.avg(x.totals))} / ${num(x.maxTotal)}</td><td>${num(Math.max(...x.totals))}</td><td>${num(Math.min(...x.totals))}</td></tr></tbody></table>
+          <h2>2. Question-wise performance</h2>
+          <table><thead><tr><th>Question</th><th>CO</th><th>Max</th><th>Average</th><th>Average %</th></tr></thead><tbody>${x.qRows()}</tbody></table>
+          <h2>3. CO-wise performance</h2>
+          ${x.cos.length ? `<p class="small">Target set by faculty: a student reaches a CO at ${coTarget}% or more of that CO's marks.</p>
+            <table><thead><tr><th>CO</th><th>Questions</th><th>Average %</th><th>Students at or above target</th></tr></thead><tbody>${x.coRows(coTarget)}</tbody></table>` : '<p class="small">No CO was mapped to the questions.</p>'}
+          <h2>4. Marks sheet</h2>
+          <table><thead><tr><th>S.No.</th><th>Section</th><th>Roll no</th><th>Name</th>${x.qs.map((q) => `<th>Q${q.seq} (${num(q.max_marks)})</th>`).join('')}<th>Total (${num(x.maxTotal)})</th></tr></thead>
+            <tbody>${sheet.students.map((st, i) => `<tr><td>${i + 1}</td><td>${esc(st.section ?? '–')}</td><td>${esc(st.roll_no)}</td><td>${esc(st.name)}</td>${x.qs.map((q) => `<td>${num(st.marks[q.id] ?? 0)}</td>`).join('')}<td><b>${num(x.totals[i])}</b></td></tr>`).join('')}</tbody></table>`
+          : '<p>No results are published yet, so there are no figures to report.</p>'}
+        <p class="sign">Faculty signature: ____________________ &nbsp;&nbsp; HOD signature: ____________________</p></section>`;
+    }
+  }
+  if (seq !== nav_seq) return;
+  app.innerHTML = `<div class="between no-print printbar"><a href="${back}">← Back</a>
+      <span><span class="muted small">In the print dialog choose "Save as PDF".</span> <button onclick="window.print()">Print / Save as PDF</button></span></div>
+    <div class="paper">${html}<p class="genline">Generated from Assessment Portal on ${fmt(new Date().toISOString())}</p></div>`;
 }
 
 // ---------- student ----------
@@ -570,7 +668,8 @@ async function viewResult(id) {
   }
   const got = r.answers.reduce((s, a) => s + a.marks, 0);
   const max = r.answers.reduce((s, a) => s + a.max_marks, 0);
-  app.innerHTML = `<p><a href="#/">← My assessments</a></p><h1>${title(r.assessment)}</h1>
+  app.innerHTML = `<p class="between no-print"><a href="#/">← My assessments</a><button class="ghost" onclick="window.print()">Print / Save as PDF</button></p>
+    <h1>${title(r.assessment)}</h1><p class="print-only">${esc(user.name)}${user.roll_no ? ` · Roll no ${esc(user.roll_no)}` : ''}</p>
     <div class="card"><div class="muted">Total marks</div><div class="score">${num(got)} / ${num(max)}</div></div>
     ${r.answers.map((a) => `<div class="card"><div class="between"><h2>Q${a.seq}</h2><span class="pill ${a.marks >= a.max_marks * 0.6 ? 'ok' : 'warn'}">${num(a.marks)} / ${num(a.max_marks)}</span></div>
       <div class="answer">${esc(a.question)}</div>
@@ -601,6 +700,7 @@ async function route() {
     if (user.role === 'admin') return await viewAdmin();
     if (user.role === 'faculty') {
       if (page === 'new') return await viewNew();
+      if (page === 'print' && id) return await viewPrint(id, +location.hash.split('/')[3]);
       if (page === 'a' && id) return await viewAssessment(+id);
       if (page === 'review' && id) return await viewReview(+id);
       return await viewFacultyHome();
