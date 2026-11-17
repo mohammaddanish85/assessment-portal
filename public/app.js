@@ -121,7 +121,7 @@ function viewSetup() {
 
 function viewLogin(owner = false) {
   app.innerHTML = `<div class="card narrow"><h1>${owner ? 'Platform owner log in' : 'Log in'}</h1>
-    <form id="f">${owner ? '' : '<label>Institute code<input name="code" required autocapitalize="characters" autocomplete="organization" placeholder="Given to your institute"></label>'}
+    <form id="f">${owner ? '' : '<label>Institute code<input name="code" required autocapitalize="characters" autocomplete="organization" placeholder="For example 1-7216281"></label>'}
     <label>Username<input name="username" required autocomplete="username"></label>
     <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
     <button>Log in</button></form>
@@ -171,7 +171,7 @@ async function viewOwner() {
       <p class="muted small">This creates the institute and its admin login. Give the institute code, username and password to the admin yourself; they must choose a new password at first login.</p>
       <form id="fnew"><input type="hidden" name="request_id">
         <div class="row"><label style="flex:3 1 280px">Institute name<input name="name" required maxlength="150"></label>
-          <label>Institute code (short, no spaces)<input name="code" required maxlength="20" pattern="[A-Za-z0-9]{2,20}" placeholder="EIT"></label></div>
+          <label>Institute code (AICTE ID or a short code)<input name="code" required maxlength="20" pattern="[A-Za-z0-9][A-Za-z0-9\-]{0,18}[A-Za-z0-9]" title="2 to 20 letters, digits or hyphens, no spaces" placeholder="1-7216281"></label></div>
         <div class="row"><label>Admin's full name<input name="admin_name" required></label><label>Admin username<input name="admin_username" required autocomplete="off"></label>
           <label>First password (min 6)<input name="admin_password" minlength="6" required autocomplete="off"></label></div>
         <p><button>Create institute and admin login</button></p></form></div>

@@ -382,7 +382,8 @@ async function handle(request, env, ctx) {
     if (route('POST', /^\/api\/owner\/institutes$/)) {
       const b = await body(request);
       const code = str(b.code, 'Institute code', 20).toUpperCase();
-      if (!/^[A-Z0-9]{2,20}$/.test(code)) fail(400, 'Institute code: 2 to 20 letters or digits, no spaces');
+      // Letters, digits and hyphens, so an AICTE permanent ID such as 1-7216281 can be used as the code.
+      if (!/^[A-Z0-9]([A-Z0-9-]{0,18}[A-Z0-9])$/.test(code)) fail(400, 'Institute code: 2 to 20 letters, digits or hyphens, no spaces');
       const name = str(b.name, 'Institute name', 150);
       const admin = { name: str(b.admin_name, 'Admin name', 100), username: str(b.admin_username, 'Admin username', 50), password: str(b.admin_password, 'Admin password', 100) };
       if (admin.password.length < 6) fail(400, 'Admin password must be at least 6 characters');
