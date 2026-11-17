@@ -168,6 +168,26 @@ async function evaluateAttempt(env, attemptId) {
   }
 }
 
+// A student whose browser closed, crashed or went offline never sends "submit". Once their time is over,
+// the attempt is closed here with whatever was last autosaved, and evaluated like any other submission.
+async function closeOverdueAttempts(env, assessmentId = null) {
+  const cutoff = new Date(Date.now() - GRACE_SECONDS * 1000).toISOString();
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM attempts WHERE status = 'in_progress' AND deadline_at < ?${assessmentId ? ' AND assessment_id = ?' : ''}`,
+  )
+    .bind(...(assessmentId ? [cutoff, assessmentId] : [cutoff]))
+    .all();
+  for (const t of results) {
+    const done = await env.DB.prepare(
+      `UPDATE attempts SET status = 'submitted', submitted_at = deadline_at WHERE id = ? AND status = 'in_progress'`,
+    )
+      .bind(t.id)
+      .run();
+    if (done.meta.changes) await evaluateAttempt(env, t.id).catch((e) => console.error('evaluation failed', e));
+  }
+  return results.length;
+}
+
 // ---------- handlers ----------
 
 async function handle(request, env, ctx) {
@@ -465,6 +485,7 @@ async function handle(request, env, ctx) {
   if ((m = route('GET', /^\/api\/assessments\/(\d+)$/))) {
     faculty();
     const a = await ownAssessment(+m[1]);
+    await closeOverdueAttempts(env, a.id);
     const qs = await env.DB.prepare('SELECT * FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
     const at = await env.DB.prepare(
       `SELECT t.id, t.status, t.submitted_at, t.tab_switches, t.paste_attempts, u.name, u.roll_no,
@@ -582,6 +603,7 @@ async function handle(request, env, ctx) {
 
   if (route('GET', /^\/api\/my\/assessments$/)) {
     student();
+    ctx.waitUntil(closeOverdueAttempts(env).catch((e) => console.error(e)));
     const { results } = await env.DB.prepare(
       `SELECT s.id, s.subject_name, s.subject_code, s.type, s.number, s.duration_min, s.start_at, s.end_at,
         (SELECT COALESCE(SUM(max_marks),0) FROM questions WHERE assessment_id = s.id) AS total_marks,
@@ -626,6 +648,10 @@ async function handle(request, env, ctx) {
       t = await env.DB.prepare('SELECT * FROM attempts WHERE id = ?').bind(attemptId).first();
     }
     if (t.status !== 'in_progress') fail(409, 'You have already submitted this assessment');
+    if (Date.now() > Date.parse(t.deadline_at) + GRACE_SECONDS * 1000) {
+      await closeOverdueAttempts(env, a.id);
+      fail(409, 'Your time for this assessment is over. Your saved answers have been submitted.');
+    }
     const saved = await env.DB.prepare('SELECT question_id, text FROM answers WHERE attempt_id = ?').bind(t.id).all();
     const text = new Map(saved.results.map((r) => [r.question_id, r.text]));
     return json({
@@ -729,6 +755,12 @@ async function handle(request, env, ctx) {
 }
 
 export default {
+  // Runs on the cron schedule in wrangler.jsonc.
+  async scheduled(event, env, ctx) {
+    await ensureSchema(env);
+    await closeOverdueAttempts(env);
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);

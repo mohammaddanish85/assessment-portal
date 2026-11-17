@@ -18,6 +18,8 @@
     }
   ],
   "ai": { "binding": "AI" },
+  // Every 5 minutes: close attempts whose time is over but were never submitted (browser closed, network lost).
+  "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     // "workers-ai"        -> Cloudflare Workers AI (POC, free daily allocation)
     // "openai-compatible" -> any OpenAI-style endpoint, e.g. a model on the college server
