@@ -438,50 +438,71 @@ async function viewAdmin() {
   })));
 }
 
-async function viewNew() {
+// Question label, with the part for a Mid Term paper (e.g. "Part A · Q2").
+const qno = (q) => `${q.part ? `Part ${esc(q.part)} · ` : ''}Q${q.seq}`;
+
+// The five assessment types. Each opens its own form with only the fields that type needs.
+const KINDS = {
+  'mid-term': { type: 'Mid Term', blurb: 'Written paper in parts (Section A, B…), every question mapped to a CO. Strict timer. Result after your approval.', q: 'descriptive' },
+  sessional: { type: 'Sessional', blurb: 'Short timed written test. LLM drafts the marks; the result is released only after your approval.', q: 'descriptive' },
+  assignment: { type: 'Assignment', blurb: 'Open for days. Students can save and come back until the deadline. Release instantly or after approval.', q: 'descriptive' },
+  mcq: { type: 'MCQ Test', blurb: 'Only MCQs, checked against your key. Result on submit. Optional negative marking and option shuffle.', q: 'mcq' },
+  hybrid: { type: 'Hybrid', blurb: 'MCQs and written questions in one paper. MCQs auto-checked, written answers LLM-assisted. Result after approval.', q: 'both' },
+};
+
+function viewChooseType() {
+  app.innerHTML = `<h1>New assessment</h1><p class="muted">Choose the type. The next page shows only what that type needs.</p>
+    <div class="types">${Object.entries(KINDS).map(([k, v]) => `<a class="type-card" href="#/new/${k}"><h2>${v.type}</h2><p>${v.blurb}</p></a>`).join('')}</div>`;
+}
+
+async function viewNew(kind) {
+  const K = KINDS[kind];
+  if (!K) return viewChooseType();
   const seq = nav_seq;
   const master = await api('GET', '/master');
   if (seq !== nav_seq) return;
   if (!master.subjects.length || !master.sections.length) {
-    app.innerHTML = '<div class="card"><h1>New assessment</h1><p>No subjects or sections are set up yet. Ask the admin to add them under Master data.</p><a class="btn" href="#/">Back</a></div>';
+    app.innerHTML = '<div class="card"><h1>New assessment</h1><p>No subjects or sections are set up yet. Ask the institute admin to add them under Institute setup.</p><a class="btn" href="#/">Back</a></div>';
     return;
   }
+  const T = K.type;
+  const isMid = T === 'Mid Term', isAsg = T === 'Assignment', hasMcq = K.q !== 'descriptive';
   const local = (d) => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   const start = new Date();
-  const end = new Date(Date.now() + 2 * 3600e3);
-  app.innerHTML = `<h1>New assessment</h1>
+  const end = new Date(Date.now() + (isAsg ? 7 * 24 : isMid ? 3 : 2) * 3600e3);
+  const release = isAsg
+    ? '<label>Result release<select name="release_mode"><option value="after_approval">After my approval</option><option value="instant">Instant (after evaluation)</option></select></label>'
+    : '';
+  const relNote = {
+    'Mid Term': 'Mid Term marks are official internal marks: results are released only after your approval.',
+    Sessional: 'Sessional results are released only after your approval.',
+    Assignment: 'Students can save and return any time until the window closes. Instant release still holds back any answer the model is unsure about.',
+    'MCQ Test': 'Checked against your answer key. The student sees the result immediately on submit.',
+    Hybrid: 'MCQs are checked automatically; written answers get an LLM draft. The whole result is released after your approval.',
+  }[T];
+  app.innerHTML = `<div class="between"><h1>New ${T}</h1><a href="#/new" class="small">Change type</a></div>
     <form id="f">
     <div class="card"><h2>Details</h2>
       <label>Subject<select name="subject_id" required><option value="">Choose subject…</option>${master.subjects.map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}${x.semester ? ` (Sem ${x.semester})` : ''}</option>`).join('')}</select></label>
-      <div class="muted small">Sections that will take this assessment</div>
+      <div class="muted small">Sections that will take this ${T}</div>
       <div class="checks">${master.sections.map((x) => `<label class="choice"><input type="checkbox" name="section" value="${x.id}"> ${esc(x.name)} <span class="muted small">(${x.students} students)</span></label>`).join('')}</div>
-      <div class="row"><label>Type<select name="type"><option>Assignment</option><option>Sessional</option><option>Tutorial</option><option>MCQ Test</option></select></label>
-        <label>Number<input name="number" type="number" min="1" value="1" required></label>
-        <label>Duration (minutes)<input name="duration_min" type="number" min="1" max="600" value="60" required></label></div>
-      <div class="row"><label>Window opens<input name="start_at" type="datetime-local" value="${local(start)}" required></label>
-        <label>Window closes<input name="end_at" type="datetime-local" value="${local(end)}" required></label>
-        <label>Result release<select name="release_mode"><option value="after_approval">After faculty approval</option><option value="instant">Instant (after evaluation)</option></select></label></div>
-      <p class="muted small" id="relnote"></p>
-      <label class="choice" style="max-width:420px"><input type="checkbox" name="shuffle"> Show the questions in a different order to each student</label></div>
+      <div class="row"><label>${T} number<input name="number" type="number" min="1" value="1" required></label>
+        ${isAsg ? '' : `<label>Duration (minutes)<input name="duration_min" type="number" min="1" max="600" value="${isMid ? 90 : hasMcq ? 30 : 60}" required></label>`}
+        ${release}</div>
+      <div class="row"><label>${isAsg ? 'Opens' : 'Window opens'}<input name="start_at" type="datetime-local" value="${local(start)}" required></label>
+        <label>${isAsg ? 'Deadline' : 'Window closes'}<input name="end_at" type="datetime-local" value="${local(end)}" required></label></div>
+      <p class="muted small">${relNote}</p>
+      <label class="choice" style="max-width:460px"><input type="checkbox" name="shuffle"> Show the questions in a different order to each student</label>
+      ${hasMcq ? `<label class="choice" style="max-width:460px"><input type="checkbox" name="option_shuffle"> Shuffle the MCQ options for each student</label>
+        <div class="row"><label>Negative marking for a wrong MCQ answer<select name="negative"><option value="0">None</option><option value="0.25">¼ of the question's marks</option><option value="0.33">⅓ of the question's marks</option><option value="0.5">½ of the question's marks</option><option value="1">Full marks of the question</option></select></label></div>
+        <p class="muted small">A skipped MCQ never loses marks.</p>` : ''}</div>
     <div id="qs"></div>
-    <p><button type="button" class="ghost" id="addq">+ Add question</button></p>
+    <p>${K.q === 'both' ? '<button type="button" class="ghost" data-add="mcq">+ Add MCQ</button> <button type="button" class="ghost" data-add="descriptive">+ Add written question</button>'
+      : `<button type="button" class="ghost" data-add="${K.q}">+ Add question</button>`}</p>
     <p><button>Save as draft</button></p></form>`;
   const f = document.getElementById('f');
   const qs = document.getElementById('qs');
 
-  const syncRelease = () => {
-    const sess = f.type.value === 'Sessional';
-    const mcqTest = f.type.value === 'MCQ Test';
-    if (sess) f.release_mode.value = 'after_approval';
-    if (mcqTest) f.release_mode.value = 'instant';
-    f.release_mode.disabled = sess || mcqTest;
-    document.getElementById('relnote').textContent = sess
-      ? 'Sessional results are always released only after faculty approval.'
-      : mcqTest
-        ? 'MCQ Test: only MCQ questions, checked against your answer key. The student sees the result immediately on submit.'
-        : 'Instant: the student sees the result right after evaluation, unless the model is unsure about an answer.';
-    [...qs.children].forEach(lockKind);
-  };
   const rubricRow = () => {
     const d = document.createElement('div');
     d.className = 'rubric-row';
@@ -497,62 +518,46 @@ async function viewNew() {
     d.querySelector('button').onclick = () => d.parentNode.children.length > 2 && d.remove();
     return d;
   };
-  // Show only the fields for the chosen question type; hidden fields are disabled so they are not validated.
-  const setKind = (box) => {
-    const mcq = box.querySelector('[data-q=kind]').value === 'mcq';
-    box.querySelector('.desc-only').hidden = mcq;
-    box.querySelector('.mcq-only').hidden = !mcq;
-    box.querySelectorAll('.desc-only input, .desc-only textarea').forEach((x) => (x.disabled = mcq));
-    box.querySelectorAll('.mcq-only input').forEach((x) => (x.disabled = !mcq));
-  };
-  const lockKind = (box) => {
-    const k = box.querySelector('[data-q=kind]');
-    const mcqTest = f.type.value === 'MCQ Test';
-    if (mcqTest) k.value = 'mcq';
-    k.disabled = mcqTest;
-    setKind(box);
-  };
-  const addQuestion = () => {
+  const addQuestion = (qk) => {
     const box = document.createElement('div');
     box.className = 'card q';
+    box.dataset.kind = qk;
     const group = `opt${++optGroup}`;
+    const lastPart = qs.lastElementChild?.querySelector('[data-q=part]')?.value || 'A';
     box.innerHTML = `<div class="between"><h2 class="qn"></h2><button type="button" class="ghost small rm">Remove</button></div>
       <label>Question<textarea data-q="text" required></textarea></label>
-      <div class="row"><label>Question type<select data-q="kind"><option value="descriptive">Descriptive (LLM-assisted marking)</option><option value="mcq">MCQ (auto-checked)</option></select></label>
-        <label>Max marks<input type="number" step="0.5" min="0.5" data-q="max_marks" required></label><label>CO (optional)<input data-q="co" placeholder="CO1"></label></div>
-      <div class="desc-only">
-        <label>Model answer / key points (never shown to students)<textarea data-q="model_answer" required></textarea></label>
+      <div class="row">${isMid ? `<label>Part<input data-q="part" value="${esc(lastPart)}" maxlength="20" required></label>` : ''}
+        <label>Max marks<input type="number" step="0.5" min="0.5" data-q="max_marks" required></label>
+        <label>CO${isMid ? '' : ' (optional)'}<input data-q="co" placeholder="CO1"${isMid ? ' required' : ''}></label></div>
+      ${qk === 'mcq' ? `<h3>Options <span class="muted small">(select the radio button of the correct option)</span></h3>
+        <div class="opt"></div><button type="button" class="ghost small addo">+ Add option</button>`
+      : `<label>Model answer / key points (never shown to students)<textarea data-q="model_answer" required></textarea></label>
         <h3>Rubric <span class="muted small">(criterion marks must add up to max marks)</span></h3>
-        <div class="rub"></div><button type="button" class="ghost small addr">+ Add criterion</button>
-      </div>
-      <div class="mcq-only">
-        <h3>Options <span class="muted small">(select the radio button of the correct option)</span></h3>
-        <div class="opt"></div><button type="button" class="ghost small addo">+ Add option</button>
-      </div>`;
-    box.querySelector('.rub').append(rubricRow());
-    box.querySelector('.addr').onclick = () => box.querySelector('.rub').append(rubricRow());
-    const opt = box.querySelector('.opt');
-    for (let i = 0; i < 4; i++) opt.append(optionRow(group));
-    box.querySelector('.addo').onclick = () => opt.children.length < 6 && opt.append(optionRow(group));
-    box.querySelector('[data-q=kind]').onchange = () => setKind(box);
-    lockKind(box);
+        <div class="rub"></div><button type="button" class="ghost small addr">+ Add criterion</button>`}`;
+    if (qk === 'mcq') {
+      const opt = box.querySelector('.opt');
+      for (let i = 0; i < 4; i++) opt.append(optionRow(group));
+      box.querySelector('.addo').onclick = () => opt.children.length < 6 && opt.append(optionRow(group));
+    } else {
+      box.querySelector('.rub').append(rubricRow());
+      box.querySelector('.addr').onclick = () => box.querySelector('.rub').append(rubricRow());
+    }
     box.querySelector('.rm').onclick = () => { if (qs.children.length > 1) { box.remove(); renumber(); } };
     qs.append(box);
     renumber();
   };
-  const renumber = () => [...qs.children].forEach((b, i) => (b.querySelector('.qn').textContent = `Question ${i + 1}`));
-  document.getElementById('addq').onclick = addQuestion;
-  addQuestion();
-  f.type.onchange = syncRelease;
-  syncRelease();
+  const renumber = () => [...qs.children].forEach((b, i) => (b.querySelector('.qn').textContent = `Question ${i + 1}${K.q === 'both' ? (b.dataset.kind === 'mcq' ? ' · MCQ' : ' · Written') : ''}`));
+  f.querySelectorAll('[data-add]').forEach((x) => (x.onclick = () => addQuestion(x.dataset.add)));
+  if (K.q === 'both') { addQuestion('mcq'); addQuestion('descriptive'); } else addQuestion(K.q);
 
   f.onsubmit = act(async () => {
     const questions = [...qs.children].map((b) => {
       const base = {
-        kind: b.querySelector('[data-q=kind]').value,
+        kind: b.dataset.kind,
         text: b.querySelector('[data-q=text]').value,
         max_marks: +b.querySelector('[data-q=max_marks]').value,
         co: b.querySelector('[data-q=co]').value,
+        part: b.querySelector('[data-q=part]')?.value || '',
       };
       if (base.kind === 'mcq') {
         const rows = [...b.querySelectorAll('.opt .rubric-row')];
@@ -572,10 +577,11 @@ async function viewNew() {
       };
     });
     const r = await api('POST', '/assessments', {
-      subject_id: +f.subject_id.value, section_ids: [...f.querySelectorAll('[name=section]:checked')].map((x) => +x.value), type: f.type.value,
-      number: +f.number.value, duration_min: +f.duration_min.value,
+      subject_id: +f.subject_id.value, section_ids: [...f.querySelectorAll('[name=section]:checked')].map((x) => +x.value), type: T,
+      number: +f.number.value, duration_min: f.duration_min ? +f.duration_min.value : null,
       start_at: new Date(f.start_at.value).toISOString(), end_at: new Date(f.end_at.value).toISOString(),
-      release_mode: f.release_mode.value, shuffle: f.shuffle.checked, questions,
+      release_mode: f.release_mode?.value, shuffle: f.shuffle.checked, option_shuffle: !!f.option_shuffle?.checked,
+      negative: f.negative ? +f.negative.value : 0, questions,
     });
     toast('Saved as draft');
     location.hash = `#/a/${r.id}`;
@@ -600,7 +606,7 @@ async function viewAssessment(id) {
   app.innerHTML = `<div class="between"><h1>${title(a)}</h1>
       ${a.status !== 'draft' ? '<span class="pill ok">Published</span>' : a.can.edit ? '<button id="pub">Publish to students</button>' : '<span class="pill warn">Draft</span>'}</div>
     <div class="card"><div class="muted">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${num(total)} marks ·
-      Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b>${a.shuffle ? ' · Question order shuffled per student' : ''}</div>
+      Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b>${a.shuffle ? ' · Question order shuffled per student' : ''}${a.option_shuffle ? ' · MCQ options shuffled' : ''}${a.negative ? ` · Negative marking: ${({ 0.25: '¼', 0.33: '⅓', 0.5: '½', 1: 'full' })[a.negative] || a.negative} of the question's marks per wrong MCQ` : ''}</div>
       <div class="muted">Sections: ${a.sections.length ? a.sections.map(esc).join(', ') : 'All students'}</div>
       <p class="downloads"><b class="small">Download for records:</b> <a class="btn ghost" href="#/print/report/${a.id}">Assessment report</a>
         <a class="btn ghost" href="#/print/paper/${a.id}">Question paper</a> <a class="btn ghost" href="#/print/key/${a.id}">Paper with answer key and rubric</a>
@@ -613,7 +619,7 @@ async function viewAssessment(id) {
         <td>${num(t.llm_total)}</td><td>${t.status === 'published' ? num(t.final_total) : '–'}</td><td>${t.tab_switches}</td><td>${t.paste_attempts}</td>
         <td class="right">${t.status === 'in_progress' ? '' : `<a class="btn ghost" href="#/review/${t.id}">${a.can.approve ? 'Review' : 'View'}</a>`}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No student has started yet.</p>'}</div>
-    <div class="card"><h2>Questions</h2>${a.questions.map((q) => `<div class="qbox"><div class="between"><h3>Q${q.seq}${q.co ? ` · ${esc(q.co)}` : ''}</h3><span class="pill">${num(q.max_marks)} marks</span></div>
+    <div class="card"><h2>Questions</h2>${a.questions.map((q) => `<div class="qbox"><div class="between"><h3>${qno(q)}${q.co ? ` · ${esc(q.co)}` : ''}</h3><span class="pill">${num(q.max_marks)} marks</span></div>
       <div class="answer">${esc(q.text)}</div>${q.kind === 'mcq' ? optionList(q.options, null, q.correct_index)
         : `<div class="muted small">Rubric: ${q.rubric.map((r) => `${esc(r.criterion)} (${num(r.marks)})`).join(' · ')}</div>`}</div>`).join('')}</div>`;
   drawAnalysis(document.getElementById('analysis'), a, sheet);
@@ -709,7 +715,7 @@ async function viewReview(id) {
     ${t.status === 'published' ? '<div class="note">This result is published. Saving again updates what the student sees.</div>' : ''}
     ${t.can_approve && !pending && t.answers.some((a) => a.kind !== 'mcq') ? '<p class="no-print"><button type="button" class="ghost small" id="redo">Re-run LLM evaluation</button> <span class="muted small">Replaces the LLM draft for typed answers. Marks you have already approved stay as they are until you change them.</span></p>' : ''}
     <form id="f">${t.answers.map((a) => `<div class="card" data-id="${a.id}">
-      <div class="between"><h2>Q${a.seq}${a.co ? ` · ${esc(a.co)}` : ''}</h2><span class="pill">${num(a.max_marks)} marks</span></div>
+      <div class="between"><h2>${qno(a)}${a.co ? ` · ${esc(a.co)}` : ''}</h2><span class="pill">${num(a.max_marks)} marks</span></div>
       <div class="answer">${esc(a.qtext)}</div>
       <h3>Student answer</h3>${a.kind === 'mcq' ? optionList(a.options, a.text, a.correct_index)
         : `<div class="answer">${a.text.trim() ? esc(a.text) : '<span class="muted">Not attempted</span>'}</div>`}
@@ -719,7 +725,7 @@ async function viewReview(id) {
         ${a.llm.missing_points.length ? `<h3>Missing points</h3><ul class="tight">${a.llm.missing_points.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
         ${a.llm.improvements.length ? `<h3>Suggested improvements</h3><ul class="tight">${a.llm.improvements.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}` : ''}
       ${a.kind === 'mcq' ? '' : `<details><summary class="muted small">Model answer</summary><div class="answer">${esc(a.model_answer)}</div></details>`}
-      <div class="row"><label>Final marks (0–${num(a.max_marks)})<input type="number" step="0.5" min="0" max="${a.max_marks}" data-f="marks" value="${a.final_marks ?? a.llm_marks ?? ''}" required></label>
+      <div class="row"><label>Final marks (up to ${num(a.max_marks)})<input type="number" step="${a.kind === 'mcq' ? 'any' : '0.5'}" min="${a.kind === 'mcq' ? -a.max_marks : 0}" max="${a.max_marks}" data-f="marks" value="${a.final_marks ?? a.llm_marks ?? ''}" required></label>
         <label style="flex:3 1 300px">Faculty remark (optional, shown to student)<input data-f="remark" value="${esc(a.faculty_remark || '')}"></label></div>
       </div>`).join('')}
     ${t.can_approve ? `<p><button>${t.status === 'published' ? 'Update published result' : 'Approve and publish result'}</button></p>` : '<p class="muted">You can view this answer sheet. Approving results needs the approval right.</p>'}</form>`;
@@ -766,7 +772,7 @@ function answerSheet(t, head = '') {
     ${t.answers.map((a) => {
       const marks = final ? a.final_marks : a.llm_marks;
       const moderated = final && a.llm_marks !== null && Math.abs(a.final_marks - a.llm_marks) > 1e-9;
-      return `<div class="qblock"><div class="between"><h3>Q${a.seq}${a.co ? ` (${esc(a.co)})` : ''}. ${esc(a.qtext)}</h3><b class="nowrap">${num(marks)} / ${num(a.max_marks)}</b></div>
+      return `<div class="qblock"><div class="between"><h3>${qno(a)}${a.co ? ` (${esc(a.co)})` : ''}. ${esc(a.qtext)}</h3><b class="nowrap">${num(marks)} / ${num(a.max_marks)}</b></div>
         ${a.kind === 'mcq' ? optionList(a.options, a.text, a.correct_index) : `<div class="answer">${a.text.trim() ? esc(a.text) : 'Not attempted'}</div>`}
         ${a.kind !== 'mcq' && a.llm ? `<table><thead><tr><th>Rubric criterion</th><th>${moderated ? 'Draft marks' : 'Marks'}</th><th>Justification</th></tr></thead><tbody>${a.llm.criteria.map((c) => `<tr><td>${esc(c.criterion)}</td><td class="nowrap">${num(c.awarded)} / ${num(c.max)}</td><td>${why(c)}</td></tr>`).join('')}</tbody></table>
           ${moderated ? `<p class="small">Draft total ${num(a.llm_marks)} was moderated by the faculty to ${num(a.final_marks)}.</p>` : ''}
@@ -797,7 +803,7 @@ async function viewPrint(kind, id) {
     if (kind === 'paper' || kind === 'key') {
       const key = kind === 'key';
       html = `<section class="doc">${head}<h1>${key ? 'Question Paper with Answer Key and Rubric' : 'Question Paper'}</h1>${meta(a, total)}
-        ${a.questions.map((q) => `<div class="qblock"><div class="between"><h3>Q${q.seq}. ${esc(q.text)}</h3><b class="nowrap">[${num(q.max_marks)}]${q.co ? ` ${esc(q.co)}` : ''}</b></div>
+        ${a.questions.map((q) => `<div class="qblock"><div class="between"><h3>${qno(q)}. ${esc(q.text)}</h3><b class="nowrap">[${num(q.max_marks)}]${q.co ? ` ${esc(q.co)}` : ''}</b></div>
           ${q.kind === 'mcq' ? optionList(q.options, null, key ? q.correct_index : null)
             : key ? `<p class="small"><b>Model answer / key points:</b></p><div class="answer">${esc(q.model_answer)}</div>
               <table><thead><tr><th>Rubric criterion</th><th>Marks</th></tr></thead><tbody>${q.rubric.map((r) => `<tr><td>${esc(r.criterion)}</td><td>${num(r.marks)}</td></tr>`).join('')}</tbody></table>` : ''}</div>`).join('')}
@@ -869,9 +875,9 @@ async function viewAttempt(assessmentId) {
   app.innerHTML = `<div class="attempt-bar between"><b>${title(d.assessment)}</b>
       <span><span class="muted small" id="saved"></span> &nbsp; Time left: <span class="timer" id="timer"></span></span></div>
     <div class="note">${d.questions.some((q) => q.kind !== 'mcq') ? 'Type your answers yourself. Pasting is disabled, and leaving' : 'Leaving'} this tab is recorded for your faculty. Answers are saved automatically.</div>
-    <form id="f">${d.questions.map((q) => `<div class="card"><div class="between"><h2>Q${q.seq}</h2><span class="pill">${num(q.max_marks)} marks</span></div>
+    <form id="f">${d.questions.map((q) => `<div class="card"><div class="between"><h2>${qno(q)}</h2><span class="pill">${num(q.max_marks)} marks</span></div>
       <div class="answer">${esc(q.text)}</div>
-      ${q.kind === 'mcq' ? `<div class="mcq" data-q="${q.id}">${q.options.map((o, i) => `<label class="choice"><input type="radio" name="q${q.id}" value="${i}"${/^\d+$/.test(q.answer) && +q.answer === i ? ' checked' : ''}> ${String.fromCharCode(65 + i)}. ${esc(o)}</label>`).join('')}
+      ${q.kind === 'mcq' ? `<div class="mcq" data-q="${q.id}">${(q.order || q.options.map((_, i) => i)).map((i, pos) => `<label class="choice"><input type="radio" name="q${q.id}" value="${i}"${/^\d+$/.test(q.answer) && +q.answer === i ? ' checked' : ''}> ${String.fromCharCode(65 + pos)}. ${esc(q.options[i])}</label>`).join('')}
           <button type="button" class="ghost small clear">Clear selection</button></div>`
         : `<label>Your answer<textarea rows="8" data-q="${q.id}" spellcheck="false">${esc(q.answer)}</textarea></label>`}</div>`).join('')}
     <p><button>Submit assessment</button></p></form>`;
@@ -966,7 +972,7 @@ async function viewResult(id) {
   app.innerHTML = `<p class="between no-print"><a href="#/">← My assessments</a><button class="ghost" onclick="window.print()">Print / Save as PDF</button></p>
     <div class="print-only">${head}</div><h1>${title(r.assessment)}</h1><p class="print-only">${esc(user.name)}${user.roll_no ? ` · Roll no ${esc(user.roll_no)}` : ''}</p>
     <div class="card"><div class="muted">Total marks</div><div class="score">${num(got)} / ${num(max)}</div></div>
-    ${r.answers.map((a) => `<div class="card"><div class="between"><h2>Q${a.seq}</h2><span class="pill ${a.marks >= a.max_marks * 0.6 ? 'ok' : 'warn'}">${num(a.marks)} / ${num(a.max_marks)}</span></div>
+    ${r.answers.map((a) => `<div class="card"><div class="between"><h2>${qno(a)}</h2><span class="pill ${a.marks >= a.max_marks * 0.6 ? 'ok' : 'warn'}">${num(a.marks)} / ${num(a.max_marks)}</span></div>
       <div class="answer">${esc(a.question)}</div>
       <h3>Your answer</h3>${a.kind === 'mcq' ? optionList(a.options, a.answer, a.correct_index)
         : `<div class="answer">${a.answer.trim() ? esc(a.answer) : '<span class="muted">Not attempted</span>'}</div>`}
@@ -1001,7 +1007,7 @@ async function route() {
     }
     const p = user.perms;
     if (page === 'setup' && p.manage) return await viewAdmin();
-    if (page === 'new' && p.create) return await viewNew();
+    if (page === 'new' && p.create) return id ? await viewNew(decodeURIComponent(id)) : viewChooseType();
     if (page === 'print' && id) return await viewPrint(id, +location.hash.split('/')[3]);
     if (page === 'a' && id) return await viewAssessment(+id);
     if (page === 'review' && id) return await viewReview(+id);

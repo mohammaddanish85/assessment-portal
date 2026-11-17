@@ -1,7 +1,9 @@
 import { ROLE_DEFAULTS, prepareDatabase } from './schema.js';
 import { evaluateAnswer } from './evaluator.js';
 
-const TYPES = ['Assignment', 'Sessional', 'Tutorial', 'MCQ Test'];
+// Types a faculty member can create. 'Tutorial' exists only in older data.
+const TYPES = ['Mid Term', 'Sessional', 'Assignment', 'MCQ Test', 'Hybrid'];
+const WRITTEN_ONLY = ['Mid Term', 'Sessional', 'Assignment'];
 const SESSION_HOURS = 12;
 const GRACE_SECONDS = 60; // allowance for the final autosave / auto-submit after the deadline
 
@@ -113,14 +115,16 @@ async function createUser(env, u) {
 function gradeMcq(r) {
   const attempted = r.text !== '';
   const correct = /^\d+$/.test(r.text) && Number(r.text) === r.correct_index;
-  const awarded = correct ? r.max_marks : 0;
+  // Negative marking: a wrong (not a blank) answer loses a fixed fraction of the question's marks.
+  const penalty = attempted && !correct ? Math.round((r.negative || 0) * r.max_marks * 100) / 100 : 0;
+  const awarded = correct ? r.max_marks : -penalty;
   return {
     auto: true,
     criteria: [{
       criterion: 'Correct option',
       max: r.max_marks,
       awarded,
-      justification: !attempted ? 'Not attempted.' : correct ? 'Correct option selected.' : 'Wrong option selected.',
+      justification: !attempted ? 'Not attempted.' : correct ? 'Correct option selected.' : penalty ? `Wrong option selected (negative marking: -${penalty}).` : 'Wrong option selected.',
     }],
     total: awarded,
     missing_points: [],
@@ -131,8 +135,8 @@ function gradeMcq(r) {
 
 async function evaluateAttempt(env, attemptId) {
   const { results } = await env.DB.prepare(
-    `SELECT a.id, a.text, q.text AS qtext, q.max_marks, q.model_answer, q.rubric_json, q.kind, q.correct_index
-     FROM answers a JOIN questions q ON q.id = a.question_id
+    `SELECT a.id, a.text, q.text AS qtext, q.max_marks, q.model_answer, q.rubric_json, q.kind, q.correct_index, s.negative
+     FROM answers a JOIN questions q ON q.id = a.question_id JOIN assessments s ON s.id = q.assessment_id
      WHERE a.attempt_id = ? AND a.eval_status != 'done'`,
   )
     .bind(attemptId)
@@ -772,18 +776,21 @@ async function handle(request, env, ctx) {
   if (route('POST', /^\/api\/assessments$/)) {
     can('create');
     const b = await body(request);
-    const type = TYPES.includes(b.type) ? b.type : fail(400, 'Invalid assessment type');
+    const type = TYPES.includes(b.type) ? b.type : fail(400, 'Choose an assessment type');
     const number = Number.isInteger(b.number) && b.number > 0 ? b.number : fail(400, 'Invalid assessment number');
-    const duration = Number.isInteger(b.duration_min) && b.duration_min >= 1 && b.duration_min <= 600
-      ? b.duration_min
-      : fail(400, 'Duration must be 1-600 minutes');
     const start = new Date(b.start_at);
     const end = new Date(b.end_at);
     if (isNaN(start) || isNaN(end) || end <= start) fail(400, 'Window end must be after window start');
-    // Sessional marks are official internal marks: they are never released without faculty approval.
-    // An MCQ Test is checked against the key, so its result is always released on submit.
+    // An assignment is open for the whole window (often days) and can be resumed, so its time limit is the window itself.
+    const duration = type === 'Assignment'
+      ? Math.ceil((end - start) / 60e3)
+      : Number.isInteger(b.duration_min) && b.duration_min >= 1 && b.duration_min <= 600 ? b.duration_min : fail(400, 'Duration must be 1-600 minutes');
+    // Mid Term and Sessional marks are official internal marks: never released without faculty approval.
+    // An MCQ Test is checked against the key, so its result is released on submit. Hybrid has written answers, so it waits for approval.
     const release = type === 'MCQ Test' ? 'instant'
-      : type !== 'Sessional' && b.release_mode === 'instant' ? 'instant' : 'after_approval';
+      : type === 'Assignment' && b.release_mode === 'instant' ? 'instant' : 'after_approval';
+    const mcqAllowed = !WRITTEN_ONLY.includes(type);
+    const negative = mcqAllowed && [0, 0.25, 0.33, 0.5, 1].includes(Number(b.negative)) ? Number(b.negative) : 0;
     const subject = await env.DB.prepare('SELECT name, code FROM subjects WHERE id = ? AND institute_id = ?').bind(b.subject_id ?? 0, inst).first();
     if (!subject) fail(400, 'Choose a subject');
     const sectionIds = [...new Set(Array.isArray(b.section_ids) ? b.section_ids.filter(Number.isInteger) : [])];
@@ -798,13 +805,16 @@ async function handle(request, env, ctx) {
       const max = Number(q.max_marks);
       if (!(max > 0 && max <= 100)) fail(400, `${label}: invalid max marks`);
       const co = typeof q.co === 'string' ? q.co.trim().slice(0, 20) : '';
+      if (type === 'Mid Term' && !co) fail(400, `${label}: give the CO (required for a Mid Term paper)`);
+      const part = type === 'Mid Term' && typeof q.part === 'string' ? q.part.trim().slice(0, 20) : '';
       if (q.kind === 'mcq') {
+        if (!mcqAllowed) fail(400, `${label}: a ${type} has only written (descriptive) questions`);
         if (!Array.isArray(q.options) || q.options.length < 2 || q.options.length > 6) fail(400, `${label}: give 2 to 6 options`);
         const options = q.options.map((o) => str(o, `${label} option`, 500));
         if (!Number.isInteger(q.correct_index) || q.correct_index < 0 || q.correct_index >= options.length) {
           fail(400, `${label}: mark the correct option`);
         }
-        return { kind: 'mcq', text: str(q.text, `${label} text`, 5000), max, co, model: '', rubric: [], options, correct: q.correct_index };
+        return { kind: 'mcq', text: str(q.text, `${label} text`, 5000), max, co, part, model: '', rubric: [], options, correct: q.correct_index };
       }
       if (type === 'MCQ Test') fail(400, `${label}: an MCQ Test can contain only MCQ questions`);
       if (!Array.isArray(q.rubric) || !q.rubric.length) fail(400, `${label}: add at least one rubric criterion`);
@@ -820,6 +830,7 @@ async function handle(request, env, ctx) {
         text: str(q.text, `${label} text`, 5000),
         max,
         co,
+        part,
         model: str(q.model_answer, `${label} model answer`, 8000),
         rubric,
         options: null,
@@ -827,22 +838,25 @@ async function handle(request, env, ctx) {
       };
     });
 
+    if (type === 'Hybrid' && !(questions.some((q) => q.kind === 'mcq') && questions.some((q) => q.kind !== 'mcq'))) {
+      fail(400, 'A Hybrid assessment needs at least one MCQ and one written question');
+    }
     const ins = await env.DB.prepare(
-      `INSERT INTO assessments (institute_id, department_id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at, shuffle)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO assessments (institute_id, department_id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at, shuffle, negative, option_shuffle)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
       .bind(inst, user.department_id ?? null, user.id, subject.name, subject.code, type, number, duration,
-        start.toISOString(), end.toISOString(), release, now(), b.shuffle ? 1 : 0)
+        start.toISOString(), end.toISOString(), release, now(), b.shuffle ? 1 : 0, negative, mcqAllowed && b.option_shuffle ? 1 : 0)
       .run();
     const id = ins.meta.last_row_id;
     await env.DB.batch([
       ...sectionIds.map((sid) => env.DB.prepare('INSERT INTO assessment_sections (assessment_id, section_id) VALUES (?,?)').bind(id, sid)),
       ...questions.map((q, i) =>
         env.DB.prepare(
-          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index, part)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric), q.kind,
-          q.options ? JSON.stringify(q.options) : null, q.correct),
+          q.options ? JSON.stringify(q.options) : null, q.correct, q.part),
       ),
     ]);
     return json({ id });
@@ -932,7 +946,7 @@ async function handle(request, env, ctx) {
     const t = await staffAttempt(+m[1]);
     const { results } = await env.DB.prepare(
       `SELECT a.id, a.text, a.eval_status, a.eval_error, a.llm_marks, a.llm_json, a.llm_confidence, a.final_marks, a.faculty_remark,
-              q.seq, q.text AS qtext, q.max_marks, q.co, q.model_answer, q.kind, q.options_json, q.correct_index
+              q.seq, q.part, q.text AS qtext, q.max_marks, q.co, q.model_answer, q.kind, q.options_json, q.correct_index
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
       .bind(t.id)
@@ -972,7 +986,8 @@ async function handle(request, env, ctx) {
     if (t.status === 'in_progress') fail(409, 'The student has not submitted yet');
     const b = await body(request);
     const { results } = await env.DB.prepare(
-      `SELECT a.id, q.seq, q.max_marks FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ?`,
+      `SELECT a.id, q.seq, q.max_marks, q.kind, s.negative FROM answers a JOIN questions q ON q.id = a.question_id
+       JOIN assessments s ON s.id = q.assessment_id WHERE a.attempt_id = ?`,
     )
       .bind(t.id)
       .all();
@@ -981,7 +996,8 @@ async function handle(request, env, ctx) {
       const g = given.get(r.id);
       const marks = Number(g?.final_marks);
       if (!g || g.final_marks === '' || g.final_marks === null || !Number.isFinite(marks)) fail(400, `Q${r.seq}: enter final marks`);
-      if (marks < 0 || marks > r.max_marks) fail(400, `Q${r.seq}: marks must be between 0 and ${r.max_marks}`);
+      const min = r.kind === 'mcq' ? -Math.round((r.negative || 0) * r.max_marks * 100) / 100 : 0;
+      if (marks < min || marks > r.max_marks) fail(400, `Q${r.seq}: marks must be between ${min} and ${r.max_marks}`);
       const remark = typeof g.remark === 'string' ? g.remark.trim().slice(0, 1000) : '';
       return env.DB.prepare('UPDATE answers SET final_marks = ?, faculty_remark = ? WHERE id = ?').bind(marks, remark, r.id);
     });
@@ -1022,7 +1038,7 @@ async function handle(request, env, ctx) {
     ).bind(+m[1], user.section_id, inst).first();
     if (!a) fail(404, 'Assessment not found');
     let t = await env.DB.prepare('SELECT * FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(a.id, user.id).first();
-    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
+    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json, part FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
     if (!t) {
       const t0 = Date.now();
       if (t0 < Date.parse(a.start_at)) fail(403, 'This assessment has not started yet');
@@ -1044,25 +1060,27 @@ async function handle(request, env, ctx) {
       await closeOverdueAttempts(env, a.id);
       fail(409, 'Your time for this assessment is over. Your saved answers have been submitted.');
     }
-    if (a.shuffle) {
-      // Same order every time this student reopens the attempt; a different order for each student.
-      const rank = (qid) => {
-        let h = (t.id * 2654435761 + qid * 40503) >>> 0;
-        h ^= h >>> 15; h = Math.imul(h, 2246822519) >>> 0; h ^= h >>> 13;
-        return h >>> 0;
-      };
-      qs.results.sort((x, y) => rank(x.id) - rank(y.id));
-    }
+    // Same order every time this student reopens the attempt; a different order for each student.
+    const rank = (x, y) => {
+      let h = (t.id * 2654435761 + x * 40503 + y * 97) >>> 0;
+      h ^= h >>> 15; h = Math.imul(h, 2246822519) >>> 0; h ^= h >>> 13;
+      return h >>> 0;
+    };
+    if (a.shuffle) qs.results.sort((x, y) => rank(x.id, 0) - rank(y.id, 0));
     const saved = await env.DB.prepare('SELECT question_id, text FROM answers WHERE attempt_id = ?').bind(t.id).all();
     const text = new Map(saved.results.map((r) => [r.question_id, r.text]));
     return json({
       attempt_id: t.id,
       deadline_at: t.deadline_at,
       server_now: now(),
-      assessment: { subject_name: a.subject_name, subject_code: a.subject_code, type: a.type, number: a.number },
+      assessment: { subject_name: a.subject_name, subject_code: a.subject_code, type: a.type, number: a.number, negative: a.negative },
       questions: qs.results.map((q) => ({
-        id: q.id, seq: q.seq, text: q.text, max_marks: q.max_marks, kind: q.kind,
+        id: q.id, seq: q.seq, text: q.text, max_marks: q.max_marks, kind: q.kind, part: q.part,
         options: q.options_json ? JSON.parse(q.options_json) : null,
+        // Shuffled display order of the options; answers are still stored as the original option index.
+        order: q.options_json && a.option_shuffle
+          ? JSON.parse(q.options_json).map((_, i) => i).sort((x, y) => rank(q.id, x + 1) - rank(q.id, y + 1))
+          : null,
         answer: text.get(q.id) || '',
       })),
     });
@@ -1120,7 +1138,7 @@ async function handle(request, env, ctx) {
     if (t.status !== 'published') return json({ published: false, status: t.status });
     const a = await env.DB.prepare('SELECT subject_name, subject_code, type, number FROM assessments WHERE id = ?').bind(t.assessment_id).first();
     const { results } = await env.DB.prepare(
-      `SELECT q.seq, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
+      `SELECT q.seq, q.part, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
               a.text, a.final_marks, a.llm_marks, a.llm_json, a.faculty_remark
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )

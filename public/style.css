@@ -106,3 +106,9 @@ dialog.ask label { margin-bottom: 12px; }
 .letterhead { display: flex; align-items: center; justify-content: center; gap: 14px; text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 14px; font-family: Arial, Helvetica, sans-serif; color: #000; }
 .letterhead img { max-height: 64px; max-width: 120px; }
 .letterhead .inst-name { font-size: 18px; font-weight: 700; }
+
+.types { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.type-card { display: block; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px; color: var(--ink); text-decoration: none; border-left: 4px solid var(--brand); }
+.type-card:hover, .type-card:focus-visible { background: var(--bg); }
+.type-card h2 { margin: 0 0 6px; }
+.type-card p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.5; }

@@ -81,7 +81,9 @@ export const SCHEMA = [
     release_mode TEXT NOT NULL CHECK (release_mode IN ('after_approval','instant')),
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published')),
     created_at TEXT NOT NULL,
-    shuffle INTEGER NOT NULL DEFAULT 0
+    shuffle INTEGER NOT NULL DEFAULT 0,
+    negative REAL NOT NULL DEFAULT 0,
+    option_shuffle INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE TABLE IF NOT EXISTS assessment_sections (
     assessment_id INTEGER NOT NULL,
@@ -99,7 +101,8 @@ export const SCHEMA = [
     rubric_json TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'descriptive',
     options_json TEXT,
-    correct_index INTEGER
+    correct_index INTEGER,
+    part TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,4 +185,13 @@ export async function prepareDatabase(db) {
   const has = async (t) => !!(await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").bind(t).first());
   if (!(await has('institutes')) && (await has('users'))) await upgradeFromSingleInstitute(db);
   await db.batch(SCHEMA.map((x) => db.prepare(x)));
+  // Columns added after the first multi-institute release.
+  const cols = async (t) => new Set((await db.prepare(`PRAGMA table_info(${t})`).all()).results.map((c) => c.name));
+  const a = await cols('assessments');
+  const q = await cols('questions');
+  const add = [];
+  if (!a.has('negative')) add.push('ALTER TABLE assessments ADD COLUMN negative REAL NOT NULL DEFAULT 0');
+  if (!a.has('option_shuffle')) add.push('ALTER TABLE assessments ADD COLUMN option_shuffle INTEGER NOT NULL DEFAULT 0');
+  if (!q.has('part')) add.push("ALTER TABLE questions ADD COLUMN part TEXT NOT NULL DEFAULT ''");
+  if (add.length) await db.batch(add.map((x) => db.prepare(x)));
 }
