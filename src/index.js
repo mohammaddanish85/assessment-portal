@@ -571,6 +571,14 @@ async function handle(request, env, ctx) {
     faculty();
     const t = await ownAttemptAsFaculty(+m[1]);
     if (t.status === 'in_progress') fail(409, 'The student has not submitted yet');
+    // ?force=1 discards the existing LLM drafts of typed answers and marks them again
+    // (used after changing the prompt or model). Final marks set by the faculty are not touched.
+    if (url.searchParams.get('force') === '1') {
+      await env.DB.prepare(
+        `UPDATE answers SET eval_status = 'pending' WHERE attempt_id = ?
+           AND question_id IN (SELECT id FROM questions WHERE assessment_id = ? AND kind != 'mcq')`,
+      ).bind(t.id, t.assessment_id).run();
+    }
     await evaluateAttempt(env, t.id);
     return json({ ok: true });
   }
