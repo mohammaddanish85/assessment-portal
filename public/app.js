@@ -32,6 +32,25 @@ function toast(msg, bad = false) {
   toast.timer = setTimeout(() => (t.className = ''), 3500);
 }
 
+// In-page dialog. The browser's own confirm()/prompt() boxes are silently blocked in some browsers and
+// in-app web views, which made buttons that depend on them look dead.
+// Resolves to false/null on cancel; to true, or the typed text when `input` is set, on OK.
+function ask(message, { ok = 'OK', input = false } = {}) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.className = 'ask';
+    d.innerHTML = `<form method="dialog"><p>${esc(message)}</p>
+      ${input ? '<input name="value" minlength="6" required autocomplete="off">' : ''}
+      <div class="between"><button type="button" class="ghost" data-cancel>Cancel</button><button data-ok>${esc(ok)}</button></div></form>`;
+    document.body.append(d);
+    let result = input ? null : false;
+    d.querySelector('[data-cancel]').onclick = () => d.close();
+    d.querySelector('form').onsubmit = () => { result = input ? d.querySelector('input').value : true; };
+    d.onclose = () => { d.remove(); resolve(result); };
+    d.showModal();
+  });
+}
+
 async function api(method, path, data) {
   const res = await fetch('/api' + path, {
     method,
@@ -158,7 +177,7 @@ async function viewAdmin() {
     }),
   }), (r) => `${r.added} student(s) added`);
   app.querySelectorAll('[data-reset]').forEach((b) => (b.onclick = act(async () => {
-    const password = prompt(`New password for ${b.dataset.name} (min 6 characters):`);
+    const password = await ask(`New password for ${b.dataset.name} (minimum 6 characters):`, { ok: 'Change password', input: true });
     if (!password) return;
     await api('POST', `/admin/users/${b.dataset.reset}/password`, { password });
     toast('Password changed');
@@ -654,7 +673,7 @@ async function viewAttempt(assessmentId) {
   cleanup = () => { save(); stop(); };
 
   f.onsubmit = act(async () => {
-    if (confirm('Submit now? You cannot change your answers after this.')) await submit();
+    if (await ask('Submit now? You cannot change your answers after this.', { ok: 'Submit' })) await submit();
   });
 }
 

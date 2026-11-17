@@ -95,3 +95,7 @@ form.row p { flex: 0 0 auto; align-self: flex-end; margin: 0 0 10px; }
   tr { break-inside: avoid; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+dialog.ask { border: 1px solid var(--line); border-radius: 10px; padding: 20px; width: min(420px, 90vw); color: var(--ink); }
+dialog.ask::backdrop { background: rgba(28, 39, 51, .45); }
+dialog.ask p { margin: 0 0 14px; font-size: 16px; }
+dialog.ask input { margin-bottom: 14px; }
