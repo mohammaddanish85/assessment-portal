@@ -251,6 +251,26 @@ async function handle(request, env, ctx) {
     return json({ ok: true }, 200, { 'set-cookie': 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' });
   }
 
+  // Public: an institute asks for access from the home page.
+  if (route('POST', /^\/api\/requests$/)) {
+    const b = await body(request);
+    const email = str(b.email, 'Email', 150);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid email address');
+    const phone = str(b.phone, 'Phone', 20);
+    if (!/^[+\d][\d\s-]{6,}$/.test(phone)) fail(400, 'Enter a valid phone number');
+    // Limit how many requests one network address can send, so the form cannot be used to flood the list.
+    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    const sender = hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip))).slice(0, 32);
+    const recent = await env.DB.prepare('SELECT COUNT(*) AS n FROM access_requests WHERE sender = ? AND created_at > ?')
+      .bind(sender, new Date(Date.now() - 3600e3).toISOString()).first();
+    if (recent.n >= 5) fail(429, 'Too many requests from this network. Try again in an hour.');
+    await env.DB.prepare(
+      'INSERT INTO access_requests (institute, contact_name, email, phone, message, sender, created_at) VALUES (?,?,?,?,?,?,?)',
+    ).bind(str(b.institute, 'Institute name', 150), str(b.contact_name, 'Your name', 100), email, phone,
+      typeof b.message === 'string' ? b.message.trim().slice(0, 1000) : '', sender, now()).run();
+    return json({ ok: true });
+  }
+
   const user = await currentUser(request, env);
   if (!user) fail(401, 'Please log in');
   if (route('GET', /^\/api\/me$/)) return json(user);

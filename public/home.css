@@ -1,0 +1,168 @@
+/* COGNEXA home page.
+   Three inks carry the meaning throughout: graphite = the AI's draft, green = the faculty's decision,
+   marker yellow = what the student takes away. */
+
+@font-face { font-family: "Newsreader"; src: url("/fonts/newsreader-latin-wght-normal.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Hanken Grotesk"; src: url("/fonts/hanken-grotesk-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Caveat"; src: url("/fonts/caveat-latin-600-normal.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+
+:root {
+  --paper: #fbfcfa;
+  --ink: #14213d;
+  --ink-soft: #46536b;
+  --rule: #d5e0ee;
+  --graphite: #6f7682;
+  --green: #0b6e4f;
+  --marker: #ffd95a;
+  --band: #eef3f9;
+  --serif: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --sans: "Hanken Grotesk", system-ui, "Segoe UI", Arial, sans-serif;
+  --hand: "Caveat", "Segoe Script", cursive;
+  --wrap: min(1120px, 100% - 2.5rem);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 1.0625rem/1.6 var(--sans); }
+h1, h2, h3, p, ol, ul, dl, dd, figure { margin: 0; padding: 0; }
+ol, ul { list-style: none; }
+a { color: inherit; }
+:focus-visible { outline: 3px solid var(--green); outline-offset: 3px; border-radius: 2px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+h2 { font: 500 clamp(1.7rem, 3.2vw, 2.35rem)/1.15 var(--serif); letter-spacing: -0.01em; }
+h3 { font: 600 1.0625rem/1.35 var(--sans); }
+main > section { width: var(--wrap); margin-inline: auto; padding-block: clamp(3.5rem, 8vw, 6rem); }
+.section-lead { max-width: 60ch; margin-top: 0.75rem; color: var(--ink-soft); }
+.small { font-size: 0.9375rem; color: var(--ink-soft); }
+
+/* ---- header ---- */
+.site-head { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.9rem max(1.25rem, (100% - 1120px) / 2); background: color-mix(in srgb, var(--paper) 92%, transparent); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--rule); }
+.wordmark { font: 700 1.25rem/1 var(--sans); letter-spacing: 0.14em; text-decoration: none; color: var(--ink); }
+.site-head nav { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9375rem; }
+.site-head nav a { text-decoration: none; color: var(--ink-soft); }
+.site-head nav a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 0.3em; }
+.site-head nav .login { color: var(--ink); font-weight: 600; border: 1.5px solid var(--ink); padding: 0.4rem 1rem; border-radius: 999px; }
+.site-head nav .login:hover { background: var(--ink); color: var(--paper); text-decoration: none; }
+
+/* ---- hero ---- */
+main > .hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: clamp(2rem, 5vw, 4.5rem); align-items: center;
+  padding-block: clamp(3rem, 7vw, 5.5rem) clamp(3.5rem, 8vw, 6rem); }
+.expansion { color: var(--ink-soft); margin-bottom: 1.25rem; }
+h1 { font: 500 clamp(2.7rem, 6.4vw, 4.6rem)/1.02 var(--serif); letter-spacing: -0.025em; text-wrap: balance; }
+.lead { margin-top: 1.5rem; max-width: 52ch; font-size: 1.1875rem; line-height: 1.55; color: var(--ink-soft); }
+.actions { margin-top: 2rem; display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.5rem; }
+.button { display: inline-block; font: 600 1rem/1 var(--sans); color: var(--paper); background: var(--ink); border: 0; border-radius: 999px;
+  padding: 0.95rem 1.5rem; text-decoration: none; cursor: pointer; }
+.button:hover { background: var(--green); }
+.button:disabled { opacity: 0.6; cursor: wait; }
+.plain { font-weight: 600; text-underline-offset: 0.3em; }
+
+/* the evaluated answer sheet */
+.sheet { position: relative; }
+.sheet-paper { position: relative; background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 1.6rem 1.5rem 1.4rem 3.4rem;
+  box-shadow: 0 1px 0 var(--rule), 0 18px 40px -22px rgba(20, 33, 61, 0.45); transform: rotate(-0.6deg);
+  background-image: linear-gradient(var(--rule) 1px, transparent 1px); background-size: 100% 1.75rem; background-position: 0 1.45rem; }
+.sheet-paper::before { content: ""; position: absolute; inset: 0 auto 0 2.5rem; width: 1.5px; background: #f0b4b4; } /* margin line */
+.sheet-q, .sheet-a { font: 400 0.9688rem/1.75rem var(--sans); }
+.sheet-q { color: var(--ink); }
+.sheet-q .max { float: right; color: var(--ink-soft); }
+.sheet-a { margin-top: 1.75rem; color: #2b3650; }
+.mark { margin-top: 1.75rem; display: grid; grid-template-columns: auto 1fr; column-gap: 0.8rem; align-items: baseline; font-family: var(--hand); font-size: 1.45rem; line-height: 1.75rem; }
+.mark .who { grid-column: 1 / -1; font: 600 0.75rem/1.75rem var(--sans); letter-spacing: 0.02em; }
+.mark .score { font-size: 1.75rem; }
+.draft { color: var(--graphite); }
+.final { color: var(--green); }
+.final .score { border: 2px solid currentColor; border-radius: 50% 46% 52% 48%; padding: 0 0.55rem; transform: rotate(-3deg); }
+.learn { color: var(--ink); }
+.learn .note { grid-column: 1 / -1; justify-self: start; background: linear-gradient(transparent 12%, var(--marker) 12% 88%, transparent 88%); padding: 0 0.35rem; }
+figcaption { margin-top: 1.1rem; font-size: 0.875rem; color: var(--ink-soft); max-width: 46ch; }
+
+/* one page-load moment: the three inks arrive in order */
+@media (prefers-reduced-motion: no-preference) {
+  .mark { opacity: 0; animation: ink 0.5s ease-out forwards; }
+  .draft { animation-delay: 0.5s; } .final { animation-delay: 1.3s; } .learn { animation-delay: 2.1s; }
+  @keyframes ink { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+}
+
+/* ---- philosophy ---- */
+main > .philosophy { padding-block: 0 clamp(3.5rem, 8vw, 6rem); }
+.philosophy ol { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 2px solid var(--ink); }
+.philosophy li { padding: 2rem 2rem 0 0; }
+.philosophy li + li { padding-left: 2rem; border-left: 1px solid var(--rule); }
+.philosophy h3 { font: 500 clamp(1.7rem, 3vw, 2.3rem)/1.1 var(--serif); letter-spacing: -0.015em; margin-bottom: 0.9rem; }
+.philosophy p { color: var(--ink-soft); }
+.p-ai h3 { color: var(--graphite); }
+.p-faculty h3 { color: var(--green); }
+.p-student h3 { display: inline; background: linear-gradient(transparent 58%, var(--marker) 58% 92%, transparent 92%); }
+.p-student p { margin-top: 0.9rem; }
+
+/* ---- vision ---- */
+main > .vision { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: clamp(2rem, 6vw, 5rem); border-top: 1px solid var(--rule); }
+.vision h2 { font: 600 1rem/1.4 var(--sans); letter-spacing: 0; color: var(--ink-soft); margin-bottom: 1rem; }
+.statement { font: 400 clamp(1.5rem, 2.8vw, 2.05rem)/1.3 var(--serif); letter-spacing: -0.01em; text-wrap: pretty; }
+.vision li { padding: 0.8rem 0; border-top: 1px solid var(--rule); }
+.vision li:last-child { border-bottom: 1px solid var(--rule); }
+
+/* ---- how it works ---- */
+.how { border-top: 1px solid var(--rule); }
+.steps { counter-reset: step; margin-top: 2.5rem; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1.75rem; }
+.steps li { counter-increment: step; border-top: 2px solid var(--ink); padding-top: 1rem; }
+.steps li::before { content: counter(step); display: block; font: 500 2.4rem/1 var(--serif); color: var(--green); margin-bottom: 0.9rem; }
+.steps p { margin-top: 0.45rem; font-size: 0.9688rem; color: var(--ink-soft); }
+
+/* ---- assessment kinds ---- */
+main > .types { width: 100%; max-width: none; background: var(--band); padding-inline: max(1.25rem, (100% - 1120px) / 2); }
+.types table { width: 100%; margin-top: 2.25rem; border-collapse: collapse; }
+.types th, .types td { text-align: left; padding: 1rem 1.25rem 1rem 0; border-top: 1px solid #c3d2e4; vertical-align: top; }
+.types thead th { border-top: 0; font: 600 0.875rem/1.3 var(--sans); color: var(--ink-soft); padding-bottom: 0.6rem; }
+.types tbody th { font: 500 1.3rem/1.25 var(--serif); width: 30%; }
+.types tbody td:last-child { color: var(--green); font-weight: 600; width: 30%; }
+.types tbody tr:last-child > * { border-bottom: 1px solid #c3d2e4; }
+
+/* ---- features ---- */
+.features dl { margin-top: 2.25rem; display: grid; grid-template-columns: repeat(2, 1fr); column-gap: clamp(2rem, 6vw, 5rem); }
+.features dl > div { padding: 1.15rem 0; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 13rem 1fr; gap: 1rem; }
+.features dt { font-weight: 600; }
+.features dd { color: var(--ink-soft); }
+
+/* ---- request access ---- */
+main > .access { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: clamp(2rem, 6vw, 5rem); border-top: 2px solid var(--ink); }
+.access-text p { margin-top: 1rem; max-width: 44ch; color: var(--ink-soft); }
+form label { display: block; font: 600 0.9375rem/1.4 var(--sans); margin-bottom: 1.1rem; }
+.optional { font-weight: 400; color: var(--ink-soft); }
+input, textarea { display: block; width: 100%; margin-top: 0.35rem; padding: 0.7rem 0.8rem; font: 400 1rem/1.4 var(--sans); color: var(--ink);
+  background: #fff; border: 1.5px solid #b9c7d9; border-radius: 6px; }
+input:focus, textarea:focus { outline: 0; border-color: var(--ink); box-shadow: 0 0 0 3px var(--marker); }
+textarea { resize: vertical; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+#request-status { margin-top: 1rem; min-height: 1.6em; font-weight: 600; }
+#request-status.ok { color: var(--green); }
+#request-status.bad { color: #a4262c; }
+
+/* ---- footer ---- */
+.site-foot { background: var(--ink); color: #c9d3e3; padding: 3rem max(1.25rem, (100% - 1120px) / 2); display: grid; gap: 0.5rem; }
+.site-foot .wordmark { color: #fff; }
+.site-foot .credit { margin-top: 1.25rem; font-size: 0.875rem; color: #93a2ba; }
+
+/* ---- smaller screens ---- */
+@media (max-width: 900px) {
+  .site-head nav a:not(.login) { display: none; }
+  main > .hero, main > .vision, main > .access { grid-template-columns: 1fr; }
+  .philosophy ol { grid-template-columns: 1fr; }
+  .philosophy li, .philosophy li + li { padding: 1.75rem 0 0; border-left: 0; }
+  .philosophy li + li { margin-top: 1.75rem; border-top: 1px solid var(--rule); }
+  .steps { grid-template-columns: 1fr 1fr; }
+  .features dl { grid-template-columns: 1fr; }
+  .types thead { display: none; }
+  .types tbody tr { display: block; padding: 1rem 0; border-top: 1px solid #c3d2e4; }
+  .types tbody th, .types tbody td { display: block; width: auto; border: 0; padding: 0.15rem 0; }
+  .types tbody tr:last-child > * { border-bottom: 0; }
+}
+@media (max-width: 520px) {
+  .steps, .pair { grid-template-columns: 1fr; }
+  .features dl > div { grid-template-columns: 1fr; gap: 0.25rem; }
+  .sheet-paper { transform: none; }
+}

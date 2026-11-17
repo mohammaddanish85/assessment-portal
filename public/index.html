@@ -3,16 +3,193 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Assessment Portal</title>
-<link rel="stylesheet" href="/style.css">
+<title>COGNEXA: Cognitive Nexus for Assessment</title>
+<meta name="description" content="COGNEXA is an online assessment portal for institutes. AI recommends marks and feedback against the faculty's rubric, the faculty decides, and the student learns from it.">
+<link rel="preload" href="/fonts/newsreader-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/home.css">
 </head>
 <body>
-<header class="top">
-  <a class="brand" href="#/">Assessment Portal <span class="tag">POC</span></a>
-  <nav id="nav"></nav>
+
+<header class="site-head">
+  <a class="wordmark" href="/">COGNEXA</a>
+  <nav aria-label="Main">
+    <a href="#philosophy">Philosophy</a>
+    <a href="#vision">Vision</a>
+    <a href="#how">How it works</a>
+    <a href="#types">Assessments</a>
+    <a href="#access">Request access</a>
+    <a class="login" href="/portal">Log in</a>
+  </nav>
 </header>
-<main id="app"><p class="muted">Loading…</p></main>
-<div id="toast" role="status" aria-live="polite"></div>
-<script src="/app.js"></script>
+
+<main>
+
+<section class="hero">
+  <div class="hero-text">
+    <p class="expansion">COGNEXA, the Cognitive Nexus for Assessment</p>
+    <h1>Beyond assessment. Towards learning.</h1>
+    <p class="lead">An online assessment portal for institutes. Students write their answers on screen, AI marks each written answer against the faculty&apos;s own rubric, and the faculty approves before those marks reach the student.</p>
+    <p class="actions">
+      <a class="button" href="#access">Request access for your institute</a>
+      <a class="plain" href="/portal">Log in to the portal</a>
+    </p>
+  </div>
+
+  <figure class="sheet" aria-label="Illustration of an answer evaluated on COGNEXA">
+    <div class="sheet-paper">
+      <p class="sheet-q"><b>Q2.</b> Differentiate between symmetric and asymmetric key cryptography with one example of each. <span class="max">[5]</span></p>
+      <p class="sheet-a">Symmetric cryptography uses the same secret key for encryption and decryption, so it is fast but the key has to be shared safely. Asymmetric cryptography uses a public key and a private key; what one locks, only the other can unlock. RSA is an example of asymmetric cryptography.</p>
+
+      <div class="mark draft">
+        <span class="who">AI draft</span>
+        <span class="score">3.5 / 5</span>
+        <span class="note">Both explained. Example of symmetric missing.</span>
+      </div>
+      <div class="mark final">
+        <span class="who">Faculty</span>
+        <span class="score">4 / 5</span>
+        <span class="note">Key sharing point is good. Approved.</span>
+      </div>
+      <div class="mark learn">
+        <span class="who">For the student</span>
+        <span class="note">Add one symmetric example next time, such as AES.</span>
+      </div>
+    </div>
+    <figcaption>Illustration. Each answer carries the AI's draft, the faculty's decision and the feedback the student sees.</figcaption>
+  </figure>
+</section>
+
+<section id="philosophy" class="philosophy">
+  <h2 class="visually-hidden">Philosophy</h2>
+  <ol>
+    <li class="p-ai">
+      <h3>AI recommends.</h3>
+      <p>The AI reads each answer against the rubric and model answer the faculty wrote. It proposes marks for every rubric point, quotes the student's words it relied on, and lists what was missing. It is a draft, and it is shown as one.</p>
+    </li>
+    <li class="p-faculty">
+      <h3>Faculty decides.</h3>
+      <p>The faculty sees the draft beside the answer, changes any mark, adds a remark, and approves. For mid-term and sessional tests nothing reaches a student until the faculty has approved it.</p>
+    </li>
+    <li class="p-student">
+      <h3>Student learns.</h3>
+      <p>The student gets more than a number: marks for each rubric point, the points they missed, and what to improve. The result stays in their login to come back to.</p>
+    </li>
+  </ol>
+</section>
+
+<section id="vision" class="vision">
+  <div>
+    <h2>Vision</h2>
+    <p class="statement">Every assessment should leave the student knowing what they got right, what they missed, and what to do next.</p>
+  </div>
+  <div>
+    <h2>Mission</h2>
+    <ul>
+      <li>Give every student feedback on every answer, not only a total.</li>
+      <li>Keep the teacher in charge of every mark that counts.</li>
+      <li>Take the repetitive first reading of answers off the faculty's desk.</li>
+      <li>Give institutes clean, printable assessment records for outcome-based education.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="how" class="how">
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li><h3>The institute sets up its profile</h3><p>Name, logo, courses, sections, subjects, and the faculty and student lists. Staff get only the access the institute gives them.</p></li>
+    <li><h3>The faculty builds an assessment</h3><p>Choose the kind of assessment, then set the questions, marks, course outcomes, model answers and rubric.</p></li>
+    <li><h3>Students write it online</h3><p>A timed window with autosave. Pasting is blocked and leaving the page is recorded for the faculty.</p></li>
+    <li><h3>AI drafts, the faculty approves</h3><p>Objective questions are checked against the key. Written answers get an AI draft that the faculty reviews and approves.</p></li>
+    <li><h3>Results and records</h3><p>Students see their feedback. The faculty gets class, question-wise and CO-wise analysis, and print-ready reports.</p></li>
+  </ol>
+</section>
+
+<section id="types" class="types">
+  <h2>One portal for every kind of assessment</h2>
+  <p class="section-lead">The faculty picks the kind first. The portal then asks only for what that kind needs.</p>
+  <table>
+    <thead><tr><th scope="col">Assessment</th><th scope="col">Questions</th><th scope="col">When the student sees the result</th></tr></thead>
+    <tbody>
+      <tr><th scope="row">Mid-term examination</th><td>Written, in parts, mapped to course outcomes</td><td>After the faculty approves</td></tr>
+      <tr><th scope="row">Sessional test</th><td>Written, short timed paper</td><td>After the faculty approves</td></tr>
+      <tr><th scope="row">Assignment</th><td>Written, open for several days</td><td>At once or after approval, as the faculty chooses</td></tr>
+      <tr><th scope="row">MCQ test</th><td>Multiple choice, checked against the key</td><td>The moment they submit</td></tr>
+      <tr><th scope="row">Hybrid</th><td>Multiple choice and written together</td><td>After the faculty approves</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="features">
+  <h2>What an institute gets</h2>
+  <dl>
+    <div><dt>Marking against your rubric</dt><dd>The AI awards marks only against the criteria the faculty set, never on a scheme of its own.</dd></div>
+    <div><dt>Approval before release</dt><dd>The faculty can moderate every mark. Marks they change are recorded as moderated.</dd></div>
+    <div><dt>Access by role</dt><dd>Institute admin, nodal officers, heads of department, faculty and students each see only what they are given.</dd></div>
+    <div><dt>Course outcome analysis</dt><dd>Question-wise and CO-wise performance for each assessment, against a target the institute sets.</dd></div>
+    <div><dt>Records for the file</dt><dd>Assessment report, question paper, answer key and evaluated answer sheets, with your institute's name and logo.</dd></div>
+    <div><dt>An integrity log</dt><dd>Paste attempts and page switches are counted for each student and shown to the faculty.</dd></div>
+  </dl>
+</section>
+
+<section id="access" class="access">
+  <div class="access-text">
+    <h2>Request access for your institute</h2>
+    <p>Tell us who you are. Once the request is approved, your institute's admin receives a login and can start setting up the institute's profile.</p>
+    <p class="small">Already have a login? <a href="/portal">Log in to the portal</a>.</p>
+  </div>
+  <form id="request" novalidate>
+    <label>Institute name<input name="institute" required maxlength="150" autocomplete="organization"></label>
+    <label>Your name<input name="contact_name" required maxlength="100" autocomplete="name"></label>
+    <div class="pair">
+      <label>Email<input name="email" type="email" required maxlength="150" autocomplete="email"></label>
+      <label>Phone<input name="phone" type="tel" required maxlength="20" autocomplete="tel"></label>
+    </div>
+    <label>Anything we should know <span class="optional">(optional)</span><textarea name="message" rows="3" maxlength="1000"></textarea></label>
+    <button class="button">Send request</button>
+    <p id="request-status" role="status" aria-live="polite"></p>
+  </form>
+</section>
+
+</main>
+
+<footer class="site-foot">
+  <p class="wordmark">COGNEXA</p>
+  <p>AI recommends. Faculty decides. Student learns.</p>
+  <p class="credit">Conceived, designed and developed by Mohammad Danish</p>
+</footer>
+
+<script>
+  const form = document.getElementById('request');
+  const status = document.getElementById('request-status');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    status.className = '';
+    if (!form.checkValidity()) {
+      status.textContent = 'Fill in the institute name, your name, a valid email and a phone number.';
+      status.className = 'bad';
+      form.querySelector(':invalid').focus();
+      return;
+    }
+    const button = form.querySelector('button');
+    button.disabled = true;
+    try {
+      const res = await fetch('/api/requests', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(Object.fromEntries(new FormData(form))),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error || 'The request could not be sent. Try again in a minute.');
+      form.reset();
+      status.textContent = 'Request sent. We will contact you on the email or phone you gave.';
+      status.className = 'ok';
+    } catch (err) {
+      status.textContent = err.message;
+      status.className = 'bad';
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
 </body>
 </html>
