@@ -1,8 +1,27 @@
-# Assessment Portal (POC)
+# COGNEXA: Cognitive Nexus for Assessment
 
-Online assessment for assignments, sessionals and tutorials. Faculty set questions with marks and a rubric,
-students type their answers in a timed window, an LLM drafts rubric-wise marks and feedback, and the faculty
-approves or moderates before the result is released.
+Beyond assessment. Towards learning. AI recommends, faculty decides, student learns.
+
+An online assessment portal for institutes. Faculty set questions with marks and a rubric, students type their
+answers in a timed window, an LLM drafts rubric-wise marks and feedback, and the faculty approves or moderates
+before the result is released.
+
+## Who uses it
+
+- **Platform owner:** sees access requests from the home page, creates institutes and their admin logins,
+  suspends or activates an institute. Has no access to an institute's internal data.
+- **Institute admin:** institute profile (name, logo), departments, courses and sections, subjects, staff and
+  students; gives each staff member a role and rights.
+- **Staff rights:** manage institute setup, create assessments, approve results, and which reports they can see
+  (own, whole department, whole institute). Roles (institute admin, nodal officer, head of department, faculty)
+  only fill in the usual rights; the admin can change them per person.
+- **Students:** take the assessments of their own section and see their results.
+
+Every institute's data is kept apart by its institute id. People log in with institute code, username and password;
+the platform owner uses the separate owner log in. A password set by someone else must be changed at first login.
+A database from the earlier single-institute version is moved into institute `INST1` automatically.
+
+Pages: `/` is the public home page with the request-access form; `/portal` is the application.
 
 ## What it covers
 
@@ -53,7 +72,7 @@ npx wrangler deploy
 ```
 
 The D1 database is created automatically on the first deploy and the tables on the first visit. The first visitor
-is asked to create the admin account, so open the site and complete setup immediately after deploying.
+is asked to create the platform owner account, so open the site and complete setup immediately after deploying.
 
 If the deploy stops with a message about the D1 database, create it once (`npx wrangler d1 create assessment-portal`)
 and add the printed `database_id` next to `database_name` in `wrangler.jsonc`.

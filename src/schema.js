@@ -1,42 +1,79 @@
-// Tables are created automatically (CREATE TABLE IF NOT EXISTS) so no CLI migration is needed.
+// Database tables. Every institute's data carries its institute_id and is only ever read through it.
+// Tables are created automatically (CREATE TABLE IF NOT EXISTS), so no CLI migration is needed.
+
+export const ROLE_DEFAULTS = {
+  admin: { manage: true, create: false, approve: false, reports: 'institute' },
+  nodal: { manage: false, create: false, approve: false, reports: 'institute' },
+  hod: { manage: false, create: true, approve: true, reports: 'department' },
+  faculty: { manage: false, create: true, approve: true, reports: 'own' },
+};
+
 export const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS institutes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    line TEXT NOT NULL DEFAULT '',
+    logo TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+    created_at TEXT NOT NULL
+  )`,
+  // institute_id is NULL only for the platform owner.
   `CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    role TEXT NOT NULL CHECK (role IN ('admin','faculty','student')),
+    institute_id INTEGER,
+    role TEXT NOT NULL CHECK (role IN ('owner','admin','nodal','hod','faculty','student')),
     name TEXT NOT NULL,
-    username TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL,
     roll_no TEXT,
     pw_hash TEXT NOT NULL,
     pw_salt TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    section_id INTEGER
-  )`,
-  `CREATE TABLE IF NOT EXISTS sections (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
-  )`,
-  `CREATE TABLE IF NOT EXISTS subjects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    code TEXT NOT NULL UNIQUE,
-    semester INTEGER
-  )`,
-  `CREATE TABLE IF NOT EXISTS assessment_sections (
-    assessment_id INTEGER NOT NULL,
-    section_id INTEGER NOT NULL,
-    PRIMARY KEY (assessment_id, section_id)
+    section_id INTEGER,
+    department_id INTEGER,
+    perms TEXT,
+    must_change INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (institute_id, username)
   )`,
   `CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
     expires_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS login_failures (
+    key TEXT NOT NULL,
+    at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS departments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE (institute_id, name)
+  )`,
+  `CREATE TABLE IF NOT EXISTS sections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    department_id INTEGER,
+    programme TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    UNIQUE (institute_id, name)
+  )`,
+  `CREATE TABLE IF NOT EXISTS subjects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL,
+    semester INTEGER,
+    UNIQUE (institute_id, code)
+  )`,
   `CREATE TABLE IF NOT EXISTS assessments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    department_id INTEGER,
     faculty_id INTEGER NOT NULL,
     subject_name TEXT NOT NULL,
     subject_code TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('Assignment','Sessional','Tutorial','MCQ Test')),
+    type TEXT NOT NULL,
     number INTEGER NOT NULL,
     duration_min INTEGER NOT NULL,
     start_at TEXT NOT NULL,
@@ -46,20 +83,10 @@ export const SCHEMA = [
     created_at TEXT NOT NULL,
     shuffle INTEGER NOT NULL DEFAULT 0
   )`,
-  `CREATE TABLE IF NOT EXISTS access_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    institute TEXT NOT NULL,
-    contact_name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    message TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'new',
-    sender TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+  `CREATE TABLE IF NOT EXISTS assessment_sections (
+    assessment_id INTEGER NOT NULL,
+    section_id INTEGER NOT NULL,
+    PRIMARY KEY (assessment_id, section_id)
   )`,
   `CREATE TABLE IF NOT EXISTS questions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,45 +128,58 @@ export const SCHEMA = [
     faculty_remark TEXT,
     UNIQUE (attempt_id, question_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS access_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute TEXT NOT NULL,
+    contact_name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'new',
+    sender TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  // Who did what: approvals, mark changes, account and password changes.
+  `CREATE TABLE IF NOT EXISTS audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER,
+    user_id INTEGER NOT NULL,
+    user_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL
+  )`,
 ];
 
-// Upgrades for databases created by an earlier version (run once per Worker start, safe to repeat).
-export async function migrate(db) {
-  const sqlOf = async (t) => (await db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(t).first())?.sql || '';
+// A database from the single-institute version: move its data into institute no. 1 (code INST1).
+async function upgradeFromSingleInstitute(db) {
+  const create = (name) => SCHEMA.find((x) => x.includes(`CREATE TABLE IF NOT EXISTS ${name} (`));
+  const perms = (role) => JSON.stringify(ROLE_DEFAULTS[role]).replace(/'/g, "''");
+  const acols = 'id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, status, created_at, shuffle';
+  const ucols = 'id, role, name, username, roll_no, pw_hash, pw_salt, created_at, section_id';
+  const sql = [
+    'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    'ALTER TABLE users RENAME TO old_users',
+    'ALTER TABLE sections RENAME TO old_sections',
+    'ALTER TABLE subjects RENAME TO old_subjects',
+    'ALTER TABLE assessments RENAME TO old_assessments',
+    create('institutes'), create('users'), create('sections'), create('subjects'), create('assessments'),
+    `INSERT INTO institutes (id, code, name, line, logo, created_at) VALUES (1, 'INST1',
+       COALESCE(NULLIF((SELECT value FROM settings WHERE key = 'institute'), ''), 'First institute'),
+       COALESCE((SELECT value FROM settings WHERE key = 'line'), ''),
+       COALESCE((SELECT value FROM settings WHERE key = 'logo'), ''), '${new Date().toISOString()}')`,
+    `INSERT INTO users (${ucols}, institute_id, perms)
+       SELECT ${ucols}, 1, CASE role WHEN 'admin' THEN '${perms('admin')}' WHEN 'faculty' THEN '${perms('faculty')}' END FROM old_users`,
+    'INSERT INTO sections (id, institute_id, name) SELECT id, 1, name FROM old_sections',
+    'INSERT INTO subjects (id, institute_id, name, code, semester) SELECT id, 1, name, code, semester FROM old_subjects',
+    `INSERT INTO assessments (${acols}, institute_id) SELECT ${acols}, 1 FROM old_assessments`,
+    'DROP TABLE old_users', 'DROP TABLE old_sections', 'DROP TABLE old_subjects', 'DROP TABLE old_assessments', 'DROP TABLE settings',
+  ];
+  await db.batch(sql.map((x) => db.prepare(x)));
+}
 
-  if (!(await sqlOf('questions')).includes('correct_index')) {
-    await db.batch([
-      db.prepare("ALTER TABLE questions ADD COLUMN kind TEXT NOT NULL DEFAULT 'descriptive'"),
-      db.prepare('ALTER TABLE questions ADD COLUMN options_json TEXT'),
-      db.prepare('ALTER TABLE questions ADD COLUMN correct_index INTEGER'),
-    ]);
-  }
-
-  // The allowed roles live in a CHECK constraint, so adding 'admin' means rebuilding the table.
-  if (!(await sqlOf('users')).includes("'admin'")) {
-    const create = SCHEMA.find((x) => x.includes('CREATE TABLE IF NOT EXISTS users'));
-    const cols = 'id, role, name, username, roll_no, pw_hash, pw_salt, created_at';
-    await db.batch([
-      db.prepare(create.replace('IF NOT EXISTS users', 'users_new')),
-      db.prepare(`INSERT INTO users_new (${cols}) SELECT ${cols} FROM users`),
-      db.prepare('DROP TABLE users'),
-      db.prepare('ALTER TABLE users_new RENAME TO users'),
-    ]);
-  }
-
-  // The allowed assessment types live in a CHECK constraint, which SQLite can only change by rebuilding the table.
-  if (!(await sqlOf('assessments')).includes('MCQ Test')) {
-    const create = SCHEMA.find((x) => x.includes('CREATE TABLE IF NOT EXISTS assessments ('));
-    const acols = 'id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, status, created_at';
-    await db.batch([
-      db.prepare(create.replace('IF NOT EXISTS assessments', 'assessments_new')),
-      db.prepare(`INSERT INTO assessments_new (${acols}) SELECT ${acols} FROM assessments`),
-      db.prepare('DROP TABLE assessments'),
-      db.prepare('ALTER TABLE assessments_new RENAME TO assessments'),
-    ]);
-  }
-
-  if (!(await sqlOf('assessments')).includes('shuffle')) {
-    await db.prepare('ALTER TABLE assessments ADD COLUMN shuffle INTEGER NOT NULL DEFAULT 0').run();
-  }
+export async function prepareDatabase(db) {
+  const has = async (t) => !!(await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").bind(t).first());
+  if (!(await has('institutes')) && (await has('users'))) await upgradeFromSingleInstitute(db);
+  await db.batch(SCHEMA.map((x) => db.prepare(x)));
 }
