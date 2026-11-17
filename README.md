@@ -6,8 +6,8 @@ approves or moderates before the result is released.
 
 ## What it covers
 
-- **Admin:** first-time account setup; master data: sections, subjects, faculty accounts, students (bulk, per section);
-  password reset for faculty and students.
+- **Admin:** first-time account setup; institute name, second line and logo for printed documents; master data
+  (sections, subjects, faculty accounts, students in bulk per section) with edit and delete; password reset.
 - **Faculty:** create an assessment (subject from master data, sections, type, number, window, duration, questions,
   CO, model answer, rubric), publish, review each submission, edit marks, approve.
 - **Student:** sees only the assessments of their own section; timed attempt with autosave, paste blocked,
@@ -26,7 +26,9 @@ approves or moderates before the result is released.
     (set `LLM_BASE_URL`, `LLM_MODEL`, optional secret `LLM_API_KEY`)
   - `mock`: dummy keyword scorer for offline UI testing. Not a real evaluation.
 
-Not built yet: editing or deleting master data, question shuffle, code questions, multi-institute support.
+Faculty can also shuffle the question order per student and delete an assessment until a student starts it.
+
+Not built yet: editing a saved assessment, code questions, multi-institute support.
 
 ## Try it offline (no Cloudflare login)
 

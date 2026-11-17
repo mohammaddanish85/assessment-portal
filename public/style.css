@@ -100,3 +100,9 @@ dialog.ask { border: 1px solid var(--line); border-radius: 10px; padding: 20px; 
 dialog.ask::backdrop { background: rgba(28, 39, 51, .45); }
 dialog.ask p { margin: 0 0 14px; font-size: 16px; }
 dialog.ask input { margin-bottom: 14px; }
+button.danger { color: var(--bad); border-color: var(--bad); }
+button.danger:hover { background: var(--bad-bg); }
+dialog.ask label { margin-bottom: 12px; }
+.letterhead { display: flex; align-items: center; justify-content: center; gap: 14px; text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 14px; font-family: Arial, Helvetica, sans-serif; color: #000; }
+.letterhead img { max-height: 64px; max-width: 120px; }
+.letterhead .inst-name { font-size: 18px; font-weight: 700; }

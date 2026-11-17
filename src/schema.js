@@ -43,7 +43,12 @@ export const SCHEMA = [
     end_at TEXT NOT NULL,
     release_mode TEXT NOT NULL CHECK (release_mode IN ('after_approval','instant')),
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published')),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    shuffle INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS questions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,12 +118,17 @@ export async function migrate(db) {
 
   // The allowed assessment types live in a CHECK constraint, which SQLite can only change by rebuilding the table.
   if (!(await sqlOf('assessments')).includes('MCQ Test')) {
-    const create = SCHEMA.find((x) => x.includes('CREATE TABLE IF NOT EXISTS assessments'));
+    const create = SCHEMA.find((x) => x.includes('CREATE TABLE IF NOT EXISTS assessments ('));
+    const acols = 'id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, status, created_at';
     await db.batch([
       db.prepare(create.replace('IF NOT EXISTS assessments', 'assessments_new')),
-      db.prepare('INSERT INTO assessments_new SELECT * FROM assessments'),
+      db.prepare(`INSERT INTO assessments_new (${acols}) SELECT ${acols} FROM assessments`),
       db.prepare('DROP TABLE assessments'),
       db.prepare('ALTER TABLE assessments_new RENAME TO assessments'),
     ]);
+  }
+
+  if (!(await sqlOf('assessments')).includes('shuffle')) {
+    await db.prepare('ALTER TABLE assessments ADD COLUMN shuffle INTEGER NOT NULL DEFAULT 0').run();
   }
 }

@@ -255,6 +255,13 @@ async function handle(request, env, ctx) {
   if (!user) fail(401, 'Please log in');
   if (route('GET', /^\/api\/me$/)) return json(user);
 
+  // Institute details printed on documents. Readable by every signed-in user.
+  if (route('GET', /^\/api\/settings$/)) {
+    const { results } = await env.DB.prepare('SELECT key, value FROM settings').all();
+    const v = Object.fromEntries(results.map((r) => [r.key, r.value]));
+    return json({ institute: v.institute || '', line: v.line || '', logo: v.logo || '' });
+  }
+
   const admin = () => user.role === 'admin' || fail(403, 'Admin only');
   const faculty = () => user.role === 'faculty' || fail(403, 'Faculty only');
   const student = () => user.role === 'student' || fail(403, 'Students only');
@@ -287,7 +294,7 @@ async function handle(request, env, ctx) {
       env.DB.prepare('SELECT id, name, code, semester FROM subjects ORDER BY semester, code'),
       env.DB.prepare(`SELECT id, name, username FROM users WHERE role='faculty' ORDER BY name`),
       env.DB.prepare(
-        `SELECT u.id, u.name, u.username, u.roll_no, s.name AS section FROM users u LEFT JOIN sections s ON s.id = u.section_id
+        `SELECT u.id, u.name, u.username, u.roll_no, u.section_id, s.name AS section FROM users u LEFT JOIN sections s ON s.id = u.section_id
          WHERE u.role='student' ORDER BY s.name, u.roll_no, u.name`,
       ),
     ]);
@@ -302,6 +309,97 @@ async function handle(request, env, ctx) {
       throw e;
     }
   };
+
+  if (route('POST', /^\/api\/admin\/settings$/)) {
+    admin();
+    const b = await body(request);
+    const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+    const logo = typeof b.logo === 'string' ? b.logo : '';
+    if (logo && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(logo)) fail(400, 'Logo must be a PNG or JPG image');
+    if (logo.length > 450000) fail(400, 'Logo is too large (keep it under 300 KB)');
+    const put = (k, v) => env.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(k, v);
+    await env.DB.batch([put('institute', text(b.institute, 150)), put('line', text(b.line, 200)), put('logo', logo)]);
+    return json({ ok: true });
+  }
+
+  if ((m = route('PUT', /^\/api\/admin\/sections\/(\d+)$/))) {
+    admin();
+    const name = str((await body(request)).name, 'Section name', 80);
+    await unique(`Section "${name}"`, () => env.DB.prepare('UPDATE sections SET name = ? WHERE id = ?').bind(name, +m[1]).run());
+    return json({ ok: true });
+  }
+
+  if ((m = route('DELETE', /^\/api\/admin\/sections\/(\d+)$/))) {
+    admin();
+    const used = await env.DB.prepare(
+      `SELECT (SELECT COUNT(*) FROM users WHERE section_id = ?1) AS students,
+              (SELECT COUNT(*) FROM assessment_sections WHERE section_id = ?1) AS assessments`,
+    ).bind(+m[1]).first();
+    if (used.students) fail(409, `This section still has ${used.students} student(s). Move or delete them first.`);
+    if (used.assessments) fail(409, 'This section is used by an assessment and cannot be deleted.');
+    await env.DB.prepare('DELETE FROM sections WHERE id = ?').bind(+m[1]).run();
+    return json({ ok: true });
+  }
+
+  const subjectFields = (b) => {
+    const sem = b.semester === null || b.semester === '' || b.semester === undefined ? null : Number(b.semester);
+    if (sem !== null && !(Number.isInteger(sem) && sem >= 1 && sem <= 12)) fail(400, 'Semester must be 1-12');
+    return { name: str(b.name, 'Subject name', 150), code: str(b.code, 'Subject code', 30), sem };
+  };
+
+  if ((m = route('PUT', /^\/api\/admin\/subjects\/(\d+)$/))) {
+    admin();
+    const f = subjectFields(await body(request));
+    await unique(`Subject code "${f.code}"`, () =>
+      env.DB.prepare('UPDATE subjects SET name = ?, code = ?, semester = ? WHERE id = ?').bind(f.name, f.code, f.sem, +m[1]).run(),
+    );
+    return json({ ok: true });
+  }
+
+  // Assessments keep their own copy of the subject name and code, so removing a subject does not affect them.
+  if ((m = route('DELETE', /^\/api\/admin\/subjects\/(\d+)$/))) {
+    admin();
+    await env.DB.prepare('DELETE FROM subjects WHERE id = ?').bind(+m[1]).run();
+    return json({ ok: true });
+  }
+
+  if ((m = route('PUT', /^\/api\/admin\/users\/(\d+)$/))) {
+    admin();
+    const target = await env.DB.prepare(`SELECT id, role FROM users WHERE id = ? AND role != 'admin'`).bind(+m[1]).first();
+    if (!target) fail(404, 'User not found');
+    const b = await body(request);
+    const username = str(b.username, 'Username', 50).toLowerCase();
+    let roll = null;
+    let section = null;
+    if (target.role === 'student') {
+      roll = str(b.roll_no, 'Roll no', 30);
+      const sec = await env.DB.prepare('SELECT id FROM sections WHERE id = ?').bind(Number(b.section_id) || 0).first();
+      if (!sec) fail(400, 'Choose a section');
+      section = sec.id;
+    }
+    await unique(`Username "${username}"`, () =>
+      env.DB.prepare('UPDATE users SET name = ?, username = ?, roll_no = ?, section_id = ? WHERE id = ?')
+        .bind(str(b.name, 'Name', 100), username, roll, section, target.id).run(),
+    );
+    return json({ ok: true });
+  }
+
+  if ((m = route('DELETE', /^\/api\/admin\/users\/(\d+)$/))) {
+    admin();
+    const target = await env.DB.prepare(`SELECT id, role FROM users WHERE id = ? AND role != 'admin'`).bind(+m[1]).first();
+    if (!target) fail(404, 'User not found');
+    const used = target.role === 'student'
+      ? await env.DB.prepare('SELECT COUNT(*) AS n FROM attempts WHERE student_id = ?').bind(target.id).first()
+      : await env.DB.prepare('SELECT COUNT(*) AS n FROM assessments WHERE faculty_id = ?').bind(target.id).first();
+    if (used.n) fail(409, target.role === 'student'
+      ? 'This student has taken an assessment, so the account is kept for the records. Reset the password to block access.'
+      : 'This faculty member has assessments, so the account is kept for the records. Reset the password to block access.');
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.id),
+      env.DB.prepare('DELETE FROM users WHERE id = ?').bind(target.id),
+    ]);
+    return json({ ok: true });
+  }
 
   if (route('POST', /^\/api\/admin\/sections$/)) {
     admin();
@@ -462,11 +560,11 @@ async function handle(request, env, ctx) {
     });
 
     const ins = await env.DB.prepare(
-      `INSERT INTO assessments (faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO assessments (faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at, shuffle)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     )
       .bind(user.id, subject.name, subject.code, type, number, duration,
-        start.toISOString(), end.toISOString(), release, now())
+        start.toISOString(), end.toISOString(), release, now(), b.shuffle ? 1 : 0)
       .run();
     const id = ins.meta.last_row_id;
     await env.DB.batch([
@@ -513,6 +611,20 @@ async function handle(request, env, ctx) {
       })),
       attempts: at.results,
     });
+  }
+
+  // An assessment can be removed only while no student has started it.
+  if ((m = route('DELETE', /^\/api\/assessments\/(\d+)$/))) {
+    faculty();
+    const a = await ownAssessment(+m[1]);
+    const started = await env.DB.prepare('SELECT COUNT(*) AS n FROM attempts WHERE assessment_id = ?').bind(a.id).first();
+    if (started.n) fail(409, 'Students have already started this assessment, so it cannot be deleted.');
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM questions WHERE assessment_id = ?').bind(a.id),
+      env.DB.prepare('DELETE FROM assessment_sections WHERE assessment_id = ?').bind(a.id),
+      env.DB.prepare('DELETE FROM assessments WHERE id = ?').bind(a.id),
+    ]);
+    return json({ ok: true });
   }
 
   // Published marks of every student, question by question (source for analysis and the marks export).
@@ -659,6 +771,15 @@ async function handle(request, env, ctx) {
     if (Date.now() > Date.parse(t.deadline_at) + GRACE_SECONDS * 1000) {
       await closeOverdueAttempts(env, a.id);
       fail(409, 'Your time for this assessment is over. Your saved answers have been submitted.');
+    }
+    if (a.shuffle) {
+      // Same order every time this student reopens the attempt; a different order for each student.
+      const rank = (qid) => {
+        let h = (t.id * 2654435761 + qid * 40503) >>> 0;
+        h ^= h >>> 15; h = Math.imul(h, 2246822519) >>> 0; h ^= h >>> 13;
+        return h >>> 0;
+      };
+      qs.results.sort((x, y) => rank(x.id) - rank(y.id));
     }
     const saved = await env.DB.prepare('SELECT question_id, text FROM answers WHERE attempt_id = ?').bind(t.id).all();
     const text = new Map(saved.results.map((r) => [r.question_id, r.text]));

@@ -37,18 +37,21 @@ function toast(msg, bad = false) {
 
 // In-page dialog. The browser's own confirm()/prompt() boxes are silently blocked in some browsers and
 // in-app web views, which made buttons that depend on them look dead.
-// Resolves to false/null on cancel; to true, or the typed text when `input` is set, on OK.
-function ask(message, { ok = 'OK', input = false } = {}) {
+// Without `fields`: resolves to true (OK) or false (cancel).
+// With `fields` [{name, label, value, type, min, options:[{value,label}], optional}]: resolves to an object of values, or null.
+function ask(message, { ok = 'OK', fields = null } = {}) {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
     d.className = 'ask';
-    d.innerHTML = `<form method="dialog"><p>${esc(message)}</p>
-      ${input ? '<input name="value" minlength="6" required autocomplete="off">' : ''}
+    const field = (f) => `<label>${esc(f.label)}${f.options
+      ? `<select name="${f.name}" required>${f.options.map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(f.value ?? '') ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
+      : `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(f.value ?? '')}"${f.min ? ` minlength="${f.min}"` : ''}${f.optional ? '' : ' required'} autocomplete="off">`}</label>`;
+    d.innerHTML = `<form method="dialog"><p>${esc(message)}</p>${(fields || []).map(field).join('')}
       <div class="between"><button type="button" class="ghost" data-cancel>Cancel</button><button data-ok>${esc(ok)}</button></div></form>`;
     document.body.append(d);
-    let result = input ? null : false;
+    let result = fields ? null : false;
     d.querySelector('[data-cancel]').onclick = () => d.close();
-    d.querySelector('form').onsubmit = () => { result = input ? d.querySelector('input').value : true; };
+    d.querySelector('form').onsubmit = (e) => { result = fields ? Object.fromEntries(new FormData(e.target)) : true; };
     d.onclose = () => { d.remove(); resolve(result); };
     d.showModal();
   });
@@ -139,29 +142,61 @@ async function viewFacultyHome() {
 
 async function viewAdmin() {
   const seq = nav_seq;
-  const d = await api('GET', '/admin/data');
+  const [d, inst] = await Promise.all([api('GET', '/admin/data'), api('GET', '/settings')]);
   if (seq !== nav_seq) return;
   const table = (head, rows, empty) => rows.length
     ? `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>` : `<p class="muted">${empty}</p>`;
-  const reset = (u) => `<button type="button" class="ghost small" data-reset="${u.id}" data-name="${esc(u.name)}">Reset password</button>`;
+  const acts = (kind, x, withReset) => `<td class="right nowrap"><button type="button" class="ghost small" data-edit="${kind}:${x.id}">Edit</button>
+    ${withReset ? `<button type="button" class="ghost small" data-reset="${x.id}">Reset password</button>` : ''}
+    <button type="button" class="ghost small danger" data-del="${kind}:${x.id}">Delete</button></td>`;
+  let logo = inst.logo;
   app.innerHTML = `<h1>Master data</h1>
+    <div class="card"><h2>Institute details <span class="muted small">(printed at the top of reports, question papers and answer sheets)</span></h2>
+      <form id="finst"><div class="row"><label style="flex:2 1 260px">Institute name<input name="institute" value="${esc(inst.institute)}" placeholder="Name of the institute"></label>
+        <label style="flex:2 1 260px">Second line (department, address or affiliation)<input name="line" value="${esc(inst.line)}"></label></div>
+        <div class="row" style="align-items:center"><label>Logo (PNG or JPG, under 300 KB)<input type="file" id="logofile" accept="image/png,image/jpeg"></label>
+          <div id="logoprev" style="flex:0 0 auto"></div></div>
+        <p><button>Save institute details</button></p></form></div>
     <div class="card"><h2>1. Sections (${d.sections.length})</h2>
       <form id="fsec" class="row"><label style="flex:3 1 260px">Section name<input name="name" placeholder="B.Tech CSE Sem 5 - A" required></label><p><button>Add section</button></p></form>
-      ${table(['Section', 'Students'], d.sections.map((x) => `<tr><td>${esc(x.name)}</td><td>${x.students}</td></tr>`), 'No sections yet.')}</div>
+      ${table(['Section', 'Students', ''], d.sections.map((x) => `<tr><td>${esc(x.name)}</td><td>${x.students}</td>${acts('sections', x)}</tr>`), 'No sections yet.')}</div>
     <div class="card"><h2>2. Subjects (${d.subjects.length})</h2>
       <form id="fsub" class="row"><label style="flex:3 1 220px">Subject name<input name="name" required></label><label>Subject code<input name="code" required></label>
         <label>Semester (optional)<input name="semester" type="number" min="1" max="12"></label><p><button>Add subject</button></p></form>
-      ${table(['Code', 'Subject', 'Semester'], d.subjects.map((x) => `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${x.semester ?? '–'}</td></tr>`), 'No subjects yet.')}</div>
+      ${table(['Code', 'Subject', 'Semester', ''], d.subjects.map((x) => `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${x.semester ?? '–'}</td>${acts('subjects', x)}</tr>`), 'No subjects yet.')}</div>
     <div class="card"><h2>3. Faculty (${d.faculty.length})</h2>
       <form id="ffac" class="row"><label>Full name<input name="name" required></label><label>Username<input name="username" required autocomplete="off"></label>
         <label>Password (min 6)<input name="password" minlength="6" required autocomplete="off"></label><p><button>Add faculty</button></p></form>
-      ${table(['Name', 'Username', ''], d.faculty.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.username)}</td><td class="right">${reset(x)}</td></tr>`), 'No faculty yet.')}</div>
+      ${table(['Name', 'Username', ''], d.faculty.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.username)}</td>${acts('faculty', x, true)}</tr>`), 'No faculty yet.')}</div>
     <div class="card"><h2>4. Students (${d.students.length})</h2>
       <form id="fstu"><label>Section<select name="section_id" required><option value="">Choose section…</option>${d.sections.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>
         <label>One student per line: <b>roll no, name, username, password</b><textarea name="lines" rows="5" placeholder="101, Student Name, student101, secret12" required></textarea></label>
         <p><button>Add students</button></p></form>
-      ${table(['Section', 'Roll no', 'Name', 'Username', ''], d.students.map((x) => `<tr><td>${esc(x.section ?? '–')}</td><td>${esc(x.roll_no)}</td><td>${esc(x.name)}</td><td>${esc(x.username)}</td><td class="right">${reset(x)}</td></tr>`), 'No students yet.')}</div>`;
+      ${table(['Section', 'Roll no', 'Name', 'Username', ''], d.students.map((x) => `<tr><td>${esc(x.section ?? '–')}</td><td>${esc(x.roll_no)}</td><td>${esc(x.name)}</td><td>${esc(x.username)}</td>${acts('students', x, true)}</tr>`), 'No students yet.')}</div>`;
 
+  // institute details
+  const prev = document.getElementById('logoprev');
+  const drawLogo = () => {
+    prev.innerHTML = logo ? `<img src="${esc(logo)}" alt="Logo" style="max-height:60px;max-width:160px"> <button type="button" class="ghost small" id="rmlogo">Remove logo</button>` : '<span class="muted small">No logo</span>';
+    const rm = document.getElementById('rmlogo');
+    if (rm) rm.onclick = () => { logo = ''; drawLogo(); };
+  };
+  drawLogo();
+  document.getElementById('logofile').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!['image/png', 'image/jpeg'].includes(file.type)) return toast('Logo must be a PNG or JPG image', true);
+    if (file.size > 300 * 1024) return toast('Logo is too large (keep it under 300 KB)', true);
+    const reader = new FileReader();
+    reader.onload = () => { logo = reader.result; drawLogo(); };
+    reader.readAsDataURL(file);
+  };
+  document.getElementById('finst').onsubmit = act(async (e) => {
+    await api('POST', '/admin/settings', { institute: e.target.institute.value, line: e.target.line.value, logo });
+    toast('Institute details saved');
+  });
+
+  // add
   const post = (formId, path, build, done) => (document.getElementById(formId).onsubmit = act(async (e) => {
     const r = await api('POST', path, build(e.target));
     toast(done(r));
@@ -179,10 +214,39 @@ async function viewAdmin() {
       return { roll_no: p[0], name: p[1], username: p[2], password: p[3] };
     }),
   }), (r) => `${r.added} student(s) added`);
+
+  // edit, delete, reset password
+  const find = (kind, id) => d[kind].find((x) => x.id === id);
+  const people = (kind) => (kind === 'faculty' || kind === 'students' ? 'users' : kind);
+  const editFields = {
+    sections: (x) => [{ name: 'name', label: 'Section name', value: x.name }],
+    subjects: (x) => [{ name: 'name', label: 'Subject name', value: x.name }, { name: 'code', label: 'Subject code', value: x.code },
+      { name: 'semester', label: 'Semester (optional)', value: x.semester ?? '', type: 'number', optional: true }],
+    faculty: (x) => [{ name: 'name', label: 'Full name', value: x.name }, { name: 'username', label: 'Username', value: x.username }],
+    students: (x) => [{ name: 'roll_no', label: 'Roll no', value: x.roll_no }, { name: 'name', label: 'Name', value: x.name }, { name: 'username', label: 'Username', value: x.username },
+      { name: 'section_id', label: 'Section', value: x.section_id ?? '', options: d.sections.map((sec) => ({ value: sec.id, label: sec.name })) }],
+  };
+  app.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = act(async () => {
+    const [kind, id] = b.dataset.edit.split(':');
+    const values = await ask('Edit details', { ok: 'Save', fields: editFields[kind](find(kind, +id)) });
+    if (!values) return;
+    await api('PUT', `/admin/${people(kind)}/${id}`, values);
+    toast('Saved');
+    viewAdmin();
+  })));
+  app.querySelectorAll('[data-del]').forEach((b) => (b.onclick = act(async () => {
+    const [kind, id] = b.dataset.del.split(':');
+    const x = find(kind, +id);
+    if (!(await ask(`Delete "${x.name}"? This cannot be undone.`, { ok: 'Delete' }))) return;
+    await api('DELETE', `/admin/${people(kind)}/${id}`);
+    toast('Deleted');
+    viewAdmin();
+  })));
   app.querySelectorAll('[data-reset]').forEach((b) => (b.onclick = act(async () => {
-    const password = await ask(`New password for ${b.dataset.name} (minimum 6 characters):`, { ok: 'Change password', input: true });
-    if (!password) return;
-    await api('POST', `/admin/users/${b.dataset.reset}/password`, { password });
+    const x = [...d.faculty, ...d.students].find((u) => u.id === +b.dataset.reset);
+    const v = await ask(`New password for ${x.name} (minimum 6 characters):`, { ok: 'Change password', fields: [{ name: 'password', label: 'New password', min: 6 }] });
+    if (!v) return;
+    await api('POST', `/admin/users/${x.id}/password`, { password: v.password });
     toast('Password changed');
   })));
 }
@@ -210,7 +274,8 @@ async function viewNew() {
       <div class="row"><label>Window opens<input name="start_at" type="datetime-local" value="${local(start)}" required></label>
         <label>Window closes<input name="end_at" type="datetime-local" value="${local(end)}" required></label>
         <label>Result release<select name="release_mode"><option value="after_approval">After faculty approval</option><option value="instant">Instant (after evaluation)</option></select></label></div>
-      <p class="muted small" id="relnote"></p></div>
+      <p class="muted small" id="relnote"></p>
+      <label class="choice" style="max-width:420px"><input type="checkbox" name="shuffle"> Show the questions in a different order to each student</label></div>
     <div id="qs"></div>
     <p><button type="button" class="ghost" id="addq">+ Add question</button></p>
     <p><button>Save as draft</button></p></form>`;
@@ -323,7 +388,7 @@ async function viewNew() {
       subject_id: +f.subject_id.value, section_ids: [...f.querySelectorAll('[name=section]:checked')].map((x) => +x.value), type: f.type.value,
       number: +f.number.value, duration_min: +f.duration_min.value,
       start_at: new Date(f.start_at.value).toISOString(), end_at: new Date(f.end_at.value).toISOString(),
-      release_mode: f.release_mode.value, questions,
+      release_mode: f.release_mode.value, shuffle: f.shuffle.checked, questions,
     });
     toast('Saved as draft');
     location.hash = `#/a/${r.id}`;
@@ -348,11 +413,12 @@ async function viewAssessment(id) {
   app.innerHTML = `<div class="between"><h1>${title(a)}</h1>
       ${a.status === 'draft' ? '<button id="pub">Publish to students</button>' : '<span class="pill ok">Published</span>'}</div>
     <div class="card"><div class="muted">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${num(total)} marks ·
-      Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b></div>
+      Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b>${a.shuffle ? ' · Question order shuffled per student' : ''}</div>
       <div class="muted">Sections: ${a.sections.length ? a.sections.map(esc).join(', ') : 'All students'}</div>
       <p class="downloads"><b class="small">Download for records:</b> <a class="btn ghost" href="#/print/report/${a.id}">Assessment report</a>
         <a class="btn ghost" href="#/print/paper/${a.id}">Question paper</a> <a class="btn ghost" href="#/print/key/${a.id}">Paper with answer key and rubric</a>
-        <a class="btn ghost" href="#/print/sheets/${a.id}">All evaluated answer sheets</a></p></div>
+        <a class="btn ghost" href="#/print/sheets/${a.id}">All evaluated answer sheets</a></p>
+      ${a.attempts.length ? '' : '<p class="downloads"><button type="button" class="ghost small danger" id="delassess">Delete this assessment</button> <span class="muted small">Possible only until a student starts it.</span></p>'}</div>
     <div class="card" id="analysis"></div>
     <div class="card"><h2>Submissions</h2>
       ${a.attempts.length ? `<table><thead><tr><th>Roll no</th><th>Student</th><th>Status</th><th>Draft marks</th><th>Final</th><th>Tab switches</th><th>Paste tries</th><th></th></tr></thead><tbody>
@@ -364,6 +430,13 @@ async function viewAssessment(id) {
       <div class="answer">${esc(q.text)}</div>${q.kind === 'mcq' ? optionList(q.options, null, q.correct_index)
         : `<div class="muted small">Rubric: ${q.rubric.map((r) => `${esc(r.criterion)} (${num(r.marks)})`).join(' · ')}</div>`}</div>`).join('')}</div>`;
   drawAnalysis(document.getElementById('analysis'), a, sheet);
+  const del = document.getElementById('delassess');
+  if (del) del.onclick = act(async () => {
+    if (!(await ask(`Delete ${a.type} ${a.number} (${a.subject_code}) with all its questions? This cannot be undone.`, { ok: 'Delete' }))) return;
+    await api('DELETE', `/assessments/${id}`);
+    toast('Assessment deleted');
+    location.hash = '#/';
+  });
   const pub = document.getElementById('pub');
   if (pub) pub.onclick = act(async () => {
     await api('POST', `/assessments/${id}/publish`);
@@ -487,15 +560,19 @@ async function viewReview(id) {
   });
 }
 
+// Institute header for printed documents (empty until the admin fills in the institute details).
+const letterhead = (inst) => (inst.institute || inst.logo
+  ? `<div class="letterhead">${inst.logo ? `<img src="${esc(inst.logo)}" alt="">` : ''}<div><div class="inst-name">${esc(inst.institute)}</div>${inst.line ? `<div>${esc(inst.line)}</div>` : ''}</div></div>` : '');
+
 // ---------- printable documents (faculty) ----------
 // Each page is laid out for A4. "Print / Save as PDF" opens the browser's print dialog, where
 // "Save as PDF" gives a file for the course file or accreditation records.
 
-function answerSheet(t) {
+function answerSheet(t, head = '') {
   const final = t.status === 'published';
   const got = t.answers.reduce((s, a) => s + ((final ? a.final_marks : a.llm_marks) ?? 0), 0);
   const max = t.answers.reduce((s, a) => s + a.max_marks, 0);
-  return `<section class="doc"><h1>Evaluated Answer Sheet</h1>
+  return `<section class="doc">${head}<h1>Evaluated Answer Sheet</h1>
     <table class="meta"><tbody><tr><th>Assessment</th><td>${title(t)}</td><th>Student</th><td>${esc(t.student_name)}</td></tr>
       <tr><th>Submitted</th><td>${t.submitted_at ? fmt(t.submitted_at) : '–'}</td><th>Roll no</th><td>${esc(t.roll_no)}</td></tr>
       <tr><th>${final ? 'Marks awarded' : 'Draft marks'}</th><td><b>${num(got)} / ${num(max)}</b>${final ? '' : ' (not yet approved by faculty)'}</td><th>Tab switches / paste tries</th><td>${t.tab_switches} / ${t.paste_attempts}</td></tr></tbody></table>
@@ -515,6 +592,7 @@ function answerSheet(t) {
 
 async function viewPrint(kind, id) {
   const seq = nav_seq;
+  const head = letterhead(await api('GET', '/settings'));
   let html = '';
   let back = `#/a/${id}`;
   const meta = (a, total) => `<table class="meta"><tbody>
@@ -525,13 +603,13 @@ async function viewPrint(kind, id) {
   if (kind === 'sheet') {
     const t = await api('GET', `/attempts/${id}`);
     back = `#/review/${id}`;
-    html = answerSheet(t);
+    html = answerSheet(t, head);
   } else {
     const a = await api('GET', `/assessments/${id}`);
     const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
     if (kind === 'paper' || kind === 'key') {
       const key = kind === 'key';
-      html = `<section class="doc"><h1>${key ? 'Question Paper with Answer Key and Rubric' : 'Question Paper'}</h1>${meta(a, total)}
+      html = `<section class="doc">${head}<h1>${key ? 'Question Paper with Answer Key and Rubric' : 'Question Paper'}</h1>${meta(a, total)}
         ${a.questions.map((q) => `<div class="qblock"><div class="between"><h3>Q${q.seq}. ${esc(q.text)}</h3><b class="nowrap">[${num(q.max_marks)}]${q.co ? ` ${esc(q.co)}` : ''}</b></div>
           ${q.kind === 'mcq' ? optionList(q.options, null, key ? q.correct_index : null)
             : key ? `<p class="small"><b>Model answer / key points:</b></p><div class="answer">${esc(q.model_answer)}</div>
@@ -541,16 +619,16 @@ async function viewPrint(kind, id) {
       const done = a.attempts.filter((t) => t.status === 'published');
       const sheets = [];
       for (const t of done) {
-        sheets.push(answerSheet(await api('GET', `/attempts/${t.id}`)));
+        sheets.push(answerSheet(await api('GET', `/attempts/${t.id}`), head));
         if (seq !== nav_seq) return;
       }
-      html = sheets.join('') || '<section class="doc"><h1>Evaluated Answer Sheets</h1><p>No results are published yet.</p></section>';
+      html = sheets.join('') || '<section class="doc">' + head + '<h1>Evaluated Answer Sheets</h1><p>No results are published yet.</p></section>';
     } else {
       const sheet = await api('GET', `/assessments/${id}/marks`);
       const x = analyse(sheet);
       const started = a.attempts.length;
       const submitted = a.attempts.filter((t) => t.status !== 'in_progress').length;
-      html = `<section class="doc"><h1>Assessment Report</h1>${meta(a, total)}
+      html = `<section class="doc">${head}<h1>Assessment Report</h1>${meta(a, total)}
         <table class="meta"><tbody><tr><th>Faculty</th><td>${esc(user.name)}</td><th>Result release</th><td>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</td></tr>
           <tr><th>Students started / submitted</th><td>${started} / ${submitted}</td><th>Results published</th><td>${x.n}</td></tr></tbody></table>
         ${x.n ? `<h2>1. Class performance</h2>
@@ -690,6 +768,7 @@ async function viewAttempt(assessmentId) {
 async function viewResult(id) {
   const seq = nav_seq;
   const r = await api('GET', `/attempts/${id}/result`);
+  const head = r.published ? letterhead(await api('GET', '/settings')) : '';
   if (seq !== nav_seq) return;
   if (!r.published) {
     app.innerHTML = '<div class="card"><h1>Result awaited</h1><p class="muted">Your answers are submitted. The result will appear here once your faculty approves it.</p><a class="btn" href="#/">Back</a></div>';
@@ -698,7 +777,7 @@ async function viewResult(id) {
   const got = r.answers.reduce((s, a) => s + a.marks, 0);
   const max = r.answers.reduce((s, a) => s + a.max_marks, 0);
   app.innerHTML = `<p class="between no-print"><a href="#/">← My assessments</a><button class="ghost" onclick="window.print()">Print / Save as PDF</button></p>
-    <h1>${title(r.assessment)}</h1><p class="print-only">${esc(user.name)}${user.roll_no ? ` · Roll no ${esc(user.roll_no)}` : ''}</p>
+    <div class="print-only">${head}</div><h1>${title(r.assessment)}</h1><p class="print-only">${esc(user.name)}${user.roll_no ? ` · Roll no ${esc(user.roll_no)}` : ''}</p>
     <div class="card"><div class="muted">Total marks</div><div class="score">${num(got)} / ${num(max)}</div></div>
     ${r.answers.map((a) => `<div class="card"><div class="between"><h2>Q${a.seq}</h2><span class="pill ${a.marks >= a.max_marks * 0.6 ? 'ok' : 'warn'}">${num(a.marks)} / ${num(a.max_marks)}</span></div>
       <div class="answer">${esc(a.question)}</div>
