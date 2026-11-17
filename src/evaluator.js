@@ -9,7 +9,8 @@ How to mark each rubric criterion:
 2. Judge the MEANING, not the wording. A correct idea earns credit even when it is brief, informal, uses different words from the model answer, or has spelling and grammar mistakes.
 3. Give partial credit. Decide how much of the criterion is correctly covered (nothing, a little, about half, most, all) and award that share of its maximum, in steps of 0.5. A correct but short or incomplete point is NOT zero.
 4. Award 0 only when "evidence" is "none" or what the student wrote is wrong. Never award 0 for a point the student stated correctly.
-5. Mark each criterion on its own. Do not reduce one criterion because another is missing.
+5. Mark each criterion on its own, against the WHOLE answer. The same words of the student can be evidence for more than one criterion: if a sentence already used for one criterion also satisfies another (for example a stated difference), give credit under both. Do not reduce one criterion because another is missing.
+6. Spelling mistakes and typing errors never reduce marks when the meaning is clear.
 
 Other rules:
 - Marks must be between 0 and the criterion's maximum.
