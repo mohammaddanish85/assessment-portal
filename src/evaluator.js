@@ -78,12 +78,15 @@ function parseJson(raw) {
 
 async function callWorkersAI(env, messages) {
   if (!env.AI) throw new Error('Workers AI binding (AI) is not configured');
-  const out = await env.AI.run(env.WORKERS_AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fast', {
-    messages,
-    temperature: 0,
-    max_tokens: 1200,
-    response_format: { type: 'json_schema', json_schema: OUTPUT_SCHEMA },
-  });
+  const model = env.WORKERS_AI_MODEL || '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+  const base = { messages, temperature: 0, max_tokens: 1200 };
+  let out;
+  try {
+    out = await env.AI.run(model, { ...base, response_format: { type: 'json_schema', json_schema: OUTPUT_SCHEMA } });
+  } catch (e) {
+    // Not every model accepts a JSON schema; the prompt itself also asks for JSON, so try once without it.
+    out = await env.AI.run(model, base);
+  }
   return parseJson(out?.response ?? out);
 }
 

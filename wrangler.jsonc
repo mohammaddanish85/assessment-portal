@@ -25,7 +25,9 @@
     // "openai-compatible" -> any OpenAI-style endpoint, e.g. a model on the college server
     // "mock"              -> offline dummy scorer, for UI testing only
     "EVAL_PROVIDER": "workers-ai",
-    "WORKERS_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    // Larger model = better marking but uses more of the free daily allocation.
+    // Smaller, cheaper alternative: "@cf/meta/llama-3.1-8b-instruct-fast"
+    "WORKERS_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "LLM_BASE_URL": "",
     "LLM_MODEL": ""
   },
