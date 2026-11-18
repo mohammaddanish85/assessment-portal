@@ -94,7 +94,25 @@ function drawNav() {
   const links = user.role === 'owner' ? '<a href="#/">Institutes and requests</a>'
     : user.role === 'student' ? '<a href="#/">My assessments</a>'
     : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}${p.students || p.manage ? '<a href="#/students">Students</a>' : ''}${(user.coordinates || []).length ? '<a href="#/my-section">My section</a>' : ''}${user.role === 'hod' ? '<a href="#/moderation">Moderation</a><a href="#/dqac">DQAC</a>' : ''}${user.dqac || user.role === 'hod' ? '<a href="#/reviews">Reviews</a>' : ''}${p.create || p.reports !== 'own' ? '<a href="#/list">Assessments</a>' : ''}${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
-  nav.innerHTML = `${user.must_change ? '' : links}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
+  const rep = user.role !== 'student' && user.role !== 'owner' && (p.reports === 'institute' || p.manage || user.role === 'hod' || (user.coordinates || []).length);
+  nav.innerHTML = `${user.must_change ? '' : links}${!user.must_change && rep ? '<a href="#/reports">Reports</a>' : ''}${user.must_change || user.role === 'owner' ? '' : '<button class="bell" id="bell" aria-label="Notifications">🔔<b id="belln" hidden></b></button>'}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
+  const bell = document.getElementById('bell');
+  if (bell) {
+    const load = () => api('GET', '/notifications').then((n) => { const b = document.getElementById('belln'); if (b) { b.hidden = !n.unread; b.textContent = n.unread; } return n; }).catch(() => null);
+    load();
+    bell.onclick = async () => {
+      const old = document.querySelector('.bell-list');
+      if (old) return old.remove();
+      const n = await load();
+      if (!n) return;
+      const box = document.createElement('div');
+      box.className = 'bell-list';
+      box.innerHTML = n.items.length ? n.items.map((x) => `<a href="${esc(x.link || '#/')}" class="${x.read_at ? '' : 'unread'}">${esc(x.text)}<br><span class="small muted">${fmt(x.created_at)}</span></a>`).join('') : '<p class="small muted" style="padding:12px">No notifications yet.</p>';
+      document.body.append(box);
+      box.onclick = () => box.remove();
+      if (n.unread) api('POST', '/notifications/read', {}).then(load).catch(() => {});
+    };
+  }
   document.getElementById('logout').onclick = act(async () => {
     await api('POST', '/logout');
     user = null;
@@ -809,6 +827,7 @@ async function viewAssessment(id) {
   if (seq !== nav_seq) return;
   app.innerHTML = `<div class="between"><h1>${title(a)}</h1>
       ${a.status !== 'draft' ? '<span class="pill ok">Published</span>' : a.can.edit && (!['Mid Term', 'Sessional', 'Assignment', 'Hybrid'].includes(a.type) || a.stage === 'approved') ? '<button id="pub">Publish to students</button>' : '<span class="pill warn">Not published</span>'}</div>
+    ${a.status === 'published' && a.type !== 'Assignment' ? '<div class="card" id="startcode"></div>' : ''}
     <div class="card" id="moderation"></div>
     <div class="card"><div class="muted">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${num(total)} marks ·
       Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b>${a.shuffle ? ' · Question order shuffled per student' : ''}${a.option_shuffle ? ' · MCQ options shuffled' : ''}${a.negative ? ` · Negative marking: ${({ 0.25: '¼', 0.33: '⅓', 0.5: '½', 1: 'full' })[a.negative] || a.negative} of the question's marks per wrong MCQ` : ''}</div>
@@ -841,6 +860,19 @@ async function viewAssessment(id) {
     location.hash = '#/';
   });
   drawModeration(document.getElementById('moderation'), a, () => viewAssessment(id)).catch((e) => toast(e.message, true));
+  const sc = document.getElementById('startcode');
+  if (sc) {
+    const show = async () => {
+      if (!document.body.contains(sc)) return;
+      const c = await api('GET', `/assessments/${id}/start-code`).catch(() => null);
+      if (!c || !c.code) return sc.remove();
+      const left = () => Math.max(0, Math.round((Date.parse(c.changes_at) - Date.now()) / 1000));
+      sc.innerHTML = `<div class="between"><div><h2>Start code for the lab</h2><p class="small muted">Read it out to the students. It changes every ${c.minutes} minutes; the previous code keeps working for one more turn.</p></div>
+        <div style="text-align:right"><div class="startcode">${esc(c.code)}</div><div class="small muted" id="sctime"></div></div></div>`;
+      const t = setInterval(() => { const el = document.getElementById('sctime'); if (!el) return clearInterval(t); const l = left(); el.textContent = `Next code in ${Math.floor(l / 60)}:${String(l % 60).padStart(2, '0')}`; if (!l) { clearInterval(t); show(); } }, 1000);
+    };
+    show();
+  }
   const pub = document.getElementById('pub');
   if (pub) pub.onclick = act(async () => {
     await api('POST', `/assessments/${id}/publish`);
@@ -930,6 +962,11 @@ async function viewReview(id) {
       <div class="answer">${esc(a.qtext)}</div>
       <h3>Student answer</h3>${a.kind === 'mcq' ? optionList(a.options, a.text, a.correct_index)
         : `<div class="answer">${a.text.trim() ? esc(a.text) : '<span class="muted">Not attempted</span>'}</div>`}
+      ${(t.rechecks || []).filter((r) => r.seq === a.seq).map((r) => `<div class="note ${r.status === 'open' ? 'warn' : ''}"><b>Re-check ${r.status === 'open' ? 'asked by the student' : r.status}</b> (${fmt(r.created_at)}): ${esc(r.reason)}
+        ${r.status === 'open' && t.can_approve ? `<div class="row" style="margin-top:8px"><label style="flex:3 1 260px">Reply to the student<input data-rr="${r.id}" placeholder="Explain the marks, or what you changed"></label>
+          <label style="max-width:150px">New marks (if accepted)<input type="number" step="any" data-rm="${r.id}" value="${a.final_marks ?? ''}"></label>
+          <p><button type="button" class="small" data-acc="${r.id}">Accept</button> <button type="button" class="ghost small" data-rej="${r.id}">Explain and keep marks</button></p></div>`
+          : r.response ? `<br>Reply: ${esc(r.response)}${r.new_marks !== null ? ` (marks ${num(r.old_marks)} → ${num(r.new_marks)})` : ''}` : ''}</div>`).join('')}
       ${a.eval_status === 'failed' ? `<div class="note bad">Evaluation failed: ${esc(a.eval_error)}</div>` : ''}
       ${a.llm && a.kind === 'mcq' ? `<h3>Auto-checked: ${num(a.llm_marks)} / ${num(a.max_marks)}</h3>` : a.llm ? `<h3>LLM draft: ${num(a.llm_marks)} / ${num(a.max_marks)} <span class="pill ${a.llm_confidence === 'low' ? 'warn' : 'ok'}">${esc(a.llm_confidence)} confidence</span></h3>
         <table><thead><tr><th>Criterion</th><th>Marks</th><th>Justification</th></tr></thead><tbody>${a.llm.criteria.map((c) => `<tr><td>${esc(c.criterion)}</td><td>${num(c.awarded)} / ${num(c.max)}</td><td>${why(c)}</td></tr>`).join('')}</tbody></table>
@@ -940,6 +977,13 @@ async function viewReview(id) {
         <label style="flex:3 1 300px">Faculty remark (optional, shown to student)<input data-f="remark" value="${esc(a.faculty_remark || '')}"></label></div>
       </div>`).join('')}
     ${t.can_approve ? `<p><button>${t.status === 'published' ? 'Update published result' : 'Approve and publish result'}</button></p>` : '<p class="muted">You can view this answer sheet. Approving results needs the approval right.</p>'}</form>`;
+  const answerRc = (rid, status) => act(async () => {
+    const response = app.querySelector(`[data-rr="${rid}"]`).value;
+    await api('POST', `/rechecks/${rid}`, { status, response, marks: +app.querySelector(`[data-rm="${rid}"]`).value });
+    toast(status === 'accepted' ? 'Marks updated and the student told' : 'Reply sent'); viewReview(id);
+  });
+  app.querySelectorAll('[data-acc]').forEach((b) => (b.onclick = answerRc(b.dataset.acc, 'accepted')));
+  app.querySelectorAll('[data-rej]').forEach((b) => (b.onclick = answerRc(b.dataset.rej, 'rejected')));
   const rerun = document.getElementById('rerun');
   if (rerun) rerun.onclick = act(async () => {
     toast('Evaluating…');
@@ -1133,40 +1177,109 @@ async function viewStudentHome() {
       <td class="right">${action(a)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No assessments are available right now.</p>'}</div>`;
 }
 
+// ---------- student: the test (computer-based-test layout, like JEE/NTA) ----------
+
+const isPhone = () => window.matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
+
 async function viewAttempt(assessmentId) {
   const seq = nav_seq;
-  const d = await api('POST', `/assessments/${assessmentId}/start`);
+  const list = await api('GET', '/my/assessments');
   if (seq !== nav_seq) return;
-  const skew = Date.parse(d.server_now) - Date.now(); // use the server clock for the timer
-  const deadline = Date.parse(d.deadline_at);
-  let tabSwitches = 0, pasteAttempts = 0, dirty = false, done = false;
+  const meta = list.find((x) => x.id === assessmentId) || {};
+  const lab = meta.type !== 'Assignment'; // lab tests: start code, full screen, computers only
+  if (lab && isPhone()) {
+    app.innerHTML = '<div class="card narrow"><h1>Use a lab computer</h1><p>This test can be taken only on a laptop or desktop computer in the lab, not on a phone or tablet.</p><a class="btn" href="#/">Back</a></div>';
+    return;
+  }
+  // Gate: the student enters the code the faculty reads out; the click also starts full screen.
+  app.innerHTML = `<div class="card narrow"><h1>${esc(meta.type || 'Test')} ${meta.number ?? ''} · ${esc(meta.subject_code || '')}</h1>
+    <p class="muted">${esc(meta.subject_name || '')}${meta.duration_min ? ` · ${meta.duration_min} minutes` : ''}</p>
+    <ul class="tight small"><li>Answers are saved every 10 seconds. If the computer stops, log in on another one and continue.</li>
+      ${lab ? '<li>The test opens in full screen. Leaving full screen or switching windows is recorded for your faculty.</li>' : ''}
+      <li>Type your answers yourself; pasting is blocked.</li></ul>
+    <form id="gate">${lab ? '<label>Start code (your faculty will tell you)<input name="code" maxlength="4" autocomplete="off" required style="font:600 24px/1 var(--sans);letter-spacing:.3em;text-transform:uppercase;max-width:180px"></label>' : ''}
+      <button>${meta.attempt_status === 'in_progress' ? 'Continue the test' : 'Start the test'}</button></form></div>`;
+  document.getElementById('gate').onsubmit = act(async (e) => {
+    if (lab && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen().catch(() => {});
+    try {
+      const d = await api('POST', `/assessments/${assessmentId}/start`, lab ? { code: e.target.code.value } : {});
+      runTest(d, lab);
+    } catch (err) {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      throw err;
+    }
+  });
+}
 
+function runTest(d, lab) {
+  const skew = Date.parse(d.server_now) - Date.now(); // the server's clock drives the timer
+  const deadline = Date.parse(d.deadline_at);
+  let tabSwitches = 0, pasteAttempts = 0, dirty = false, done = false, cur = 0;
+  const Q = d.questions;
+  const state = Q.map((q) => ({ visited: false, review: false }));
+  const ans = (q) => (q.kind === 'mcq' ? document.querySelector(`[data-mcq="${q.id}"] input:checked`)?.value ?? '' : document.querySelector(`textarea[data-q="${q.id}"]`).value);
   app.innerHTML = `<div class="attempt-bar between"><b>${title(d.assessment)}</b>
       <span><span class="muted small" id="saved"></span> &nbsp; Time left: <span class="timer" id="timer"></span></span></div>
-    <div class="note">${d.questions.some((q) => q.kind !== 'mcq') ? 'Type your answers yourself. Pasting is disabled, and leaving' : 'Leaving'} this tab is recorded for your faculty. Answers are saved automatically.</div>
-    ${(d.assessment.parts || []).map((p) => `<div class="note">${p.name ? `PART-${esc(p.name)}: ` : ''}attempt any ${p.attempt} of the ${p.questions} questions. If you answer more, your best ${p.attempt} are counted.</div>`).join('')}
-    <form id="f">${d.questions.map((q) => `<div class="card"><div class="between"><h2>${qno(q)}</h2><span class="pill">${num(q.max_marks)} marks</span></div>
-      <div class="answer">${esc(q.text)}</div>
-      ${q.kind === 'mcq' ? `<div class="mcq" data-q="${q.id}">${(q.order || q.options.map((_, i) => i)).map((i, pos) => `<label class="choice"><input type="radio" name="q${q.id}" value="${i}"${/^\d+$/.test(q.answer) && +q.answer === i ? ' checked' : ''}> ${String.fromCharCode(65 + pos)}. ${esc(q.options[i])}</label>`).join('')}
-          <button type="button" class="ghost small clear">Clear selection</button></div>`
-        : `<label>Your answer<textarea rows="8" data-q="${q.id}" spellcheck="false">${esc(q.answer)}</textarea></label>`}</div>`).join('')}
-    <p><button>Submit assessment</button></p></form>`;
-
+    ${(d.assessment.parts || []).map((p) => `<div class="note small">${p.name ? `PART-${esc(p.name)}: ` : ''}attempt any ${p.attempt} of the ${p.questions} questions. If you answer more, your best ${p.attempt} are counted.</div>`).join('')}
+    <div class="cbt">
+      <form id="f" class="card cbt-q" onsubmit="return false">${Q.map((q, i) => `<section data-i="${i}" hidden>
+        <div class="between"><h2>${qno(q)}</h2><span class="pill">${num(q.max_marks)} mark${q.max_marks === 1 ? '' : 's'}</span></div>
+        <div class="answer">${esc(q.text)}</div>
+        ${q.kind === 'mcq' ? `<div class="mcq" data-mcq="${q.id}">${(q.order || q.options.map((_, k) => k)).map((k, pos) => `<label class="choice"><input type="radio" name="q${q.id}" value="${k}"${/^\d+$/.test(q.answer) && +q.answer === k ? ' checked' : ''}> ${String.fromCharCode(65 + pos)}. ${esc(q.options[k])}</label>`).join('')}</div>`
+          : `<div class="between"><span class="small muted">Your answer</span><label class="small" style="margin:0"><input type="checkbox" data-code="${q.id}" style="width:auto;display:inline"> Code / SQL answer (fixed-width, Tab indents)</label></div>
+            <textarea rows="14" data-q="${q.id}" spellcheck="false">${esc(q.answer)}</textarea>`}
+      </section>`).join('')}
+        <div class="cbt-actions"><button type="button" class="ghost" id="prev">Previous</button><button type="button" class="ghost" id="clear">Clear response</button>
+          <button type="button" class="ghost" id="mark">Mark for review &amp; next</button><button type="button" id="next">Save &amp; next</button></div></form>
+      <aside class="card cbt-pal"><div class="small muted">Questions</div><div class="pal" id="pal"></div>
+        <div class="legend small"><span><i class="st answered"></i>Answered</span><span><i class="st notans"></i>Not answered</span><span><i class="st review"></i>Marked for review</span><span><i class="st nv"></i>Not visited</span></div>
+        <button type="button" id="finish" style="width:100%;margin-top:12px">Submit test</button></aside></div>
+    <div class="fs-block" id="fsblock" hidden><div class="card narrow"><h2>Return to full screen</h2><p>You left full screen. This is recorded for your faculty. Go back to continue the test.</p><button type="button" id="refs">Return to full screen</button></div></div>`;
   const f = document.getElementById('f');
-  const payload = () => ({
-    answers: [
-      ...[...f.querySelectorAll('textarea')].map((x) => ({ question_id: +x.dataset.q, text: x.value })),
-      ...[...f.querySelectorAll('.mcq')].map((x) => ({ question_id: +x.dataset.q, text: x.querySelector('input:checked')?.value ?? '' })),
-    ],
-    tab_switches: tabSwitches,
-    paste_attempts: pasteAttempts,
+  const pal = document.getElementById('pal');
+  const drawPal = () => {
+    pal.innerHTML = Q.map((q, i) => {
+      const a = ans(q).trim();
+      const cls = state[i].review ? 'review' + (a ? ' has' : '') : a ? 'answered' : state[i].visited ? 'notans' : 'nv';
+      return `<button type="button" class="st ${cls}${i === cur ? ' cur' : ''}" data-go="${i}" title="${esc(qno(q))}">${i + 1}</button>`;
+    }).join('');
+    pal.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => show(+b.dataset.go)));
+  };
+  const show = (i) => {
+    cur = Math.max(0, Math.min(Q.length - 1, i));
+    state[cur].visited = true;
+    f.querySelectorAll('section[data-i]').forEach((x) => (x.hidden = +x.dataset.i !== cur));
+    document.getElementById('prev').disabled = cur === 0;
+    document.getElementById('next').textContent = cur === Q.length - 1 ? 'Save' : 'Save & next';
+    drawPal();
+    const t = f.querySelector(`section[data-i="${cur}"] textarea`);
+    if (t) t.focus();
+  };
+  document.getElementById('prev').onclick = () => show(cur - 1);
+  document.getElementById('next').onclick = () => { state[cur].review = false; save(true); show(cur + 1); };
+  document.getElementById('mark').onclick = () => { state[cur].review = true; save(true); show(cur + 1); };
+  document.getElementById('clear').onclick = () => {
+    const sec = f.querySelector(`section[data-i="${cur}"]`);
+    sec.querySelectorAll('input[type=radio]').forEach((x) => (x.checked = false));
+    const t = sec.querySelector('textarea'); if (t) t.value = '';
+    state[cur].review = false; dirty = true; drawPal();
+  };
+  f.querySelectorAll('[data-code]').forEach((c) => (c.onchange = () => f.querySelector(`textarea[data-q="${c.dataset.code}"]`).classList.toggle('code', c.checked)));
+  f.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && e.target.classList.contains('code')) {
+      e.preventDefault();
+      const t = e.target, p0 = t.selectionStart;
+      t.value = t.value.slice(0, p0) + '    ' + t.value.slice(t.selectionEnd);
+      t.selectionStart = t.selectionEnd = p0 + 4; dirty = true;
+    }
   });
-  const save = async () => {
-    if (!dirty || done) return;
+  const payload = () => ({ answers: Q.map((q) => ({ question_id: q.id, text: ans(q) })), tab_switches: tabSwitches, paste_attempts: pasteAttempts });
+  const save = async (force) => {
+    if ((!dirty && !force) || done) return;
     dirty = false;
     try {
       await api('PUT', `/attempts/${d.attempt_id}/answers`, payload());
-      document.getElementById('saved').textContent = `Saved ${new Date().toLocaleTimeString([], { timeStyle: 'short' })}`;
+      document.getElementById('saved').textContent = `Saved ${new Date().toLocaleTimeString([], { timeStyle: 'medium' })}`;
     } catch (e) {
       dirty = true;
       document.getElementById('saved').textContent = 'Not saved – retrying';
@@ -1178,6 +1291,7 @@ async function viewAttempt(assessmentId) {
     try {
       const r = await api('POST', `/attempts/${d.attempt_id}/submit`, payload());
       stop();
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       toast('Submitted');
       location.hash = r.published ? `#/result/${d.attempt_id}` : '#/';
     } catch (e) {
@@ -1185,46 +1299,52 @@ async function viewAttempt(assessmentId) {
       throw e;
     }
   };
-
   const blockPaste = (e) => {
     if (e.target.tagName !== 'TEXTAREA') return;
-    e.preventDefault();
-    pasteAttempts++;
-    dirty = true;
+    e.preventDefault(); pasteAttempts++; dirty = true;
     toast('Pasting is not allowed', true);
   };
-  const onHide = () => { if (document.hidden) { tabSwitches++; dirty = true; save(); } };
+  const onHide = () => { if (document.hidden && !done) { tabSwitches++; dirty = true; save(); } };
   const onLeave = (e) => { if (!done) e.preventDefault(); };
+  const fsBlock = document.getElementById('fsblock');
+  const onFs = () => {
+    if (!lab || done) return;
+    if (!document.fullscreenElement) { tabSwitches++; dirty = true; save(); fsBlock.hidden = false; } else fsBlock.hidden = true;
+  };
+  document.getElementById('refs').onclick = () => document.documentElement.requestFullscreen().catch(() => {});
   f.addEventListener('paste', blockPaste);
   f.addEventListener('drop', blockPaste);
-  f.addEventListener('input', () => (dirty = true));
-  f.querySelectorAll('.mcq .clear').forEach((b) => (b.onclick = () => {
-    b.parentNode.querySelectorAll('input').forEach((x) => (x.checked = false));
-    dirty = true;
-  }));
+  f.addEventListener('input', () => { dirty = true; drawPal(); });
+  f.addEventListener('change', () => { dirty = true; drawPal(); });
   document.addEventListener('visibilitychange', onHide);
+  document.addEventListener('fullscreenchange', onFs);
   window.addEventListener('beforeunload', onLeave);
+  if (lab && !document.fullscreenElement) fsBlock.hidden = false;
 
   const tick = () => {
     const left = Math.max(0, deadline - (Date.now() + skew));
-    const s = Math.floor(left / 1000);
+    const sec = Math.floor(left / 1000);
     const el = document.getElementById('timer');
-    el.textContent = `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-    el.classList.toggle('low', s < 300);
+    if (!el) return;
+    el.textContent = `${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(Math.floor(sec / 60) % 60).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+    el.classList.toggle('low', sec < 300);
     if (left === 0 && !done) { toast('Time is over. Submitting…'); submit().catch((e) => toast(e.message, true)); }
   };
-  const timers = [setInterval(tick, 1000), setInterval(save, 15000)];
+  const timers = [setInterval(tick, 1000), setInterval(save, 10000)];
   tick();
+  show(0);
   const stop = () => {
     timers.forEach(clearInterval);
     document.removeEventListener('visibilitychange', onHide);
+    document.removeEventListener('fullscreenchange', onFs);
     window.removeEventListener('beforeunload', onLeave);
     cleanup = null;
   };
   cleanup = () => { save(); stop(); };
-
-  f.onsubmit = act(async () => {
-    if (await ask('Submit now? You cannot change your answers after this.', { ok: 'Submit' })) await submit();
+  document.getElementById('finish').onclick = act(async () => {
+    const answered = Q.filter((q) => ans(q).trim()).length;
+    const marked = state.filter((x) => x.review).length;
+    if (await ask(`Submit now? Answered ${answered} of ${Q.length}${marked ? `, ${marked} marked for review` : ''}. You cannot change your answers after this.`, { ok: 'Submit' })) await submit();
   });
 }
 
@@ -1241,7 +1361,14 @@ async function viewResult(id) {
   const max = r.max ?? r.answers.reduce((s, a) => s + a.max_marks, 0);
   app.innerHTML = `<p class="between no-print"><a href="#/">← My assessments</a><button class="ghost" onclick="window.print()">Print / Save as PDF</button></p>
     <div class="print-only">${head}</div><h1>${title(r.assessment)}</h1><p class="print-only">${esc(user.name)}${user.roll_no ? ` · Roll no ${esc(user.roll_no)}` : ''}</p>
-    <div class="card"><div class="muted">Total marks</div><div class="score">${num(got)} / ${num(max)}</div></div>
+    <div class="result-top">
+      <div class="card"><div class="muted">Total marks</div><div class="score">${num(got)} / ${num(max)}</div></div>
+      <div class="card"><div class="muted">Rank${r.rank ? ` in ${r.rank.scope === 'branch' ? 'the branch' : 'your section'}` : ''}</div><div class="score">${r.rank ? `${r.rank.rank} <span class="small muted">of ${r.rank.of}</span>` : '<span class="small muted">After the whole section is approved</span>'}</div></div>
+      <div class="card"><div class="muted">Preparedness</div><div class="score">${r.preparedness ?? '–'}<span class="small muted"> / 100</span></div></div></div>
+    ${r.cos && r.cos.length ? `<div class="card"><h2>How you did in each course outcome</h2>${r.cos.map((c) => `<div class="co-row"><div><b>${esc(c.co)}</b> <span class="small muted">${esc(c.text)}</span></div>
+      <div class="bar"><span style="width:${Math.min(100, c.pct)}%" class="${c.band === 'Strong' ? 'ok' : c.band === 'Developing' ? 'mid' : 'low'}"></span></div><div class="nowrap small"><b>${c.pct}%</b> · ${c.band}</div></div>`).join('')}
+      <p class="small muted">Work first on the outcomes marked "Needs work".</p></div>` : ''}
+    ${r.recheck_open ? `<p class="small muted no-print">Think a question was marked wrongly? You can ask for a re-check until ${fmt(r.recheck_until)}.</p>` : ''}
     ${r.answers.map((a) => `<div class="card"><div class="between"><h2>${qno(a)}${a.counted === false ? ' <span class="pill">not counted</span>' : ''}</h2><span class="pill ${a.marks >= a.max_marks * 0.6 ? 'ok' : 'warn'}">${num(a.marks)} / ${num(a.max_marks)}</span></div>
       <div class="answer">${esc(a.question)}</div>
       <h3>Your answer</h3>${a.kind === 'mcq' ? optionList(a.options, a.answer, a.correct_index)
@@ -1251,7 +1378,16 @@ async function viewResult(id) {
       ${a.faculty_remark ? `<h3>Faculty remark</h3><p>${esc(a.faculty_remark)}</p>` : ''}
       ${a.missing_points.length ? `<h3>What was missing</h3><ul class="tight">${a.missing_points.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
       ${a.improvements.length ? `<h3>How to improve</h3><ul class="tight">${a.improvements.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      ${a.model_answer ? `<details><summary><b>Model answer</b></summary><div class="answer">${esc(a.model_answer)}</div></details>` : ''}
+      ${(a.rechecks || []).map((x) => `<div class="note small${x.status === 'open' ? '' : x.status === 'accepted' ? '' : ' warn'}"><b>Re-check ${x.status === 'open' ? 'requested' : x.status}</b>: ${esc(x.reason)}${x.response ? `<br>Faculty: ${esc(x.response)}${x.new_marks !== null ? ` (marks ${num(x.old_marks)} → ${num(x.new_marks)})` : ''}` : ''}</div>`).join('')}
+      ${r.recheck_open && !(a.rechecks || []).some((x) => x.status === 'open') ? `<p class="no-print"><button type="button" class="ghost small" data-rc="${a.seq}">Ask for re-check</button></p>` : ''}
     </div>`).join('')}`;
+  app.querySelectorAll('[data-rc]').forEach((b) => (b.onclick = act(async () => {
+    const v = await ask('Why should this answer be re-checked? Your faculty will see your answer and reply.', { ok: 'Send request', fields: [{ name: 'reason', label: 'Reason' }] });
+    if (!v) return;
+    await api('POST', `/attempts/${id}/recheck`, { seq: +b.dataset.rc, reason: v.reason });
+    toast('Re-check requested'); viewResult(id);
+  })));
 }
 
 // ---------- router ----------
@@ -1282,6 +1418,7 @@ async function route() {
     if (page === 'dqac' && user.role === 'hod') return await viewDqac();
     if (page === 'moderation' && user.role === 'hod') return await viewTracker();
     if (page === 'reviews') return await viewMyReviews();
+    if (page === 'reports') return await viewReports();
     if (page === 'new' && p.create) return id ? await viewNew(decodeURIComponent(id)) : viewChooseType();
     if (page === 'print' && id) return await viewPrint(id, +location.hash.split('/')[3]);
     if (page === 'a' && id) return await viewAssessment(+id);

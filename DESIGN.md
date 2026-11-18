@@ -17,7 +17,7 @@ General rule: every rule has a sensible default, and the institute can change it
 - [x] Common first password set by the institute (e.g. EIT@12345); first login forces the student to set their own.
 - [x] No self-service reset. "Forgot password" sends a request (email later) to the class coordinator;
       admin, registrar and class coordinator can all reset.
-- [ ] Desktop/laptop only for tests; mobile shows "take this test on a lab computer".
+- [x] Desktop/laptop only for tests; mobile shows "take this test on a lab computer".
 
 ## 3. Roles
 - [x] Admin: institute profile, letterhead, paper format, departments, programmes, scheme (subjects, COs, RBTL),
@@ -64,25 +64,25 @@ General rule: every rule has a sensible default, and the institute can change it
       approved/reviewed from their own login. Full A51 file as PDF on letterhead.
 
 ## 7. Student: taking a test
-- [ ] CBT layout like JEE/NTA: one question per screen, palette (answered / not answered / marked for review).
-- [ ] Code answers in a monospace code box (no run); LLM/SLM checks it.
-- [ ] Faculty starts the test; a 4-character start code (letters+digits, no 0/O/1/I) on the faculty screen,
+- [x] CBT layout like JEE/NTA: one question per screen, palette (answered / not answered / marked for review).
+- [x] Code answers in a monospace code box (no run); LLM/SLM checks it.
+- [x] Faculty starts the test; a 4-character start code (letters+digits, no 0/O/1/I) on the faculty screen,
       changing every 5 minutes (setting 5/10), told verbally to the lab.
-- [ ] Full screen on start; leaving full screen / switching tab is warned and recorded.
-- [ ] Autosave every 10 seconds; resume on another computer; same timer for all (no extra time).
+- [x] Full screen on start; leaving full screen / switching tab is warned and recorded.
+- [x] Autosave every 10 seconds; resume on another computer; same timer for all (no extra time).
       Re-test for one student: later.
 
 ## 8. Results
-- [ ] Marks per question, rubric breakdown, missing points, suggestions, model answer.
-- [ ] Rank (ties share a rank: 1, 1, 3). Default section-wise; approver can switch to branch-wise.
+- [x] Marks per question, rubric breakdown, missing points, suggestions, model answer.
+- [x] Rank (ties share a rank: 1, 1, 3). Default section-wise; approver can switch to branch-wise.
       Rank shown only after the whole section's result is approved. No class average.
-- [ ] Preparedness score (0–100) and CO bands (Strong / Developing / Needs work).
-- [ ] Re-check claim within 7 days per question; faculty explains or moderates marks, even after declaration; logged.
-- [ ] Notification bell (free). Email later on Workers Paid (≈₹900–1,000/month at institute scale).
+- [x] Preparedness score (0–100) and CO bands (Strong / Developing / Needs work).
+- [x] Re-check claim within 7 days per question; faculty explains or moderates marks, even after declaration; logged.
+- [x] Notification bell (free). Email later on Workers Paid (≈₹900–1,000/month at institute scale).
 
 ## 9. Reports
-- [ ] Faculty: marks sheet, question-wise analysis, CO summary (% students achieving each CO).
-- [ ] HOD: A51 tracker and file, A53 rank sheet (CT-wise and aggregate, Total, %, Pass/Fail at 40%, Rank),
+- [x] Faculty: marks sheet, question-wise analysis, CO summary (% students achieving each CO).
+- [x] HOD: A51 tracker and file, A53 rank sheet (CT-wise and aggregate, Total, %, Pass/Fail at 40%, Rank),
       section toppers, pending work.
-- [ ] Admin/Director: institute summary, department-wise.
+- [x] Admin/Director: institute summary, department-wise.
 - [ ] Later: CO attainment levels (institute formula), theory/lab evaluation sheets (internal marks), lab marks.

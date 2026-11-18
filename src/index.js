@@ -148,6 +148,23 @@ function countBest(parts, rows, key) {
   return Math.round(rows.reduce((s, r) => s + (r.counted ? Number(r[key] ?? 0) : 0), 0) * 100) / 100;
 }
 
+// ---------- notifications (the bell) ----------
+async function notify(env, institute, userIds, text, link = '') {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (!ids.length) return;
+  await env.DB.batch(ids.map((id) => env.DB.prepare('INSERT INTO notifications (institute_id, user_id, text, link, created_at) VALUES (?,?,?,?,?)')
+    .bind(institute, id, String(text).slice(0, 300), link, now())));
+}
+
+// ---------- test start code: 4 characters, changes every few minutes, shown on the faculty's screen ----------
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
+async function startCode(seed, windowIndex) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(seed), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(String(windowIndex))));
+  return [...mac.slice(0, 4)].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
+}
+const NO_START_CODE = ['Assignment']; // assignments are written over days, from anywhere
+
 // ---------- institute settings ----------
 
 const SETTING_DEFAULTS = { session: '', default_password: '', pass_percent: 40, rank_scope: 'section', code_minutes: 5 };
@@ -262,7 +279,7 @@ async function evaluateAttempt(env, attemptId) {
   if (info.release_mode === 'instant' && info.low === 0) {
     await env.DB.batch([
       env.DB.prepare(`UPDATE answers SET final_marks = llm_marks WHERE attempt_id = ?`).bind(attemptId),
-      env.DB.prepare(`UPDATE attempts SET status='published' WHERE id = ? AND status='submitted'`).bind(attemptId),
+      env.DB.prepare(`UPDATE attempts SET status='published', published_at = ? WHERE id = ? AND status='submitted'`).bind(now(), attemptId),
     ]);
   } else {
     await env.DB.prepare(`UPDATE attempts SET status='evaluated' WHERE id = ? AND status='submitted'`)
@@ -413,7 +430,11 @@ async function handle(request, env, ctx) {
       .bind(ins.id, String(b.username || '').trim().toLowerCase()).first();
     if (st) {
       const open = await env.DB.prepare(`SELECT 1 FROM reset_requests WHERE student_id = ? AND status = 'open'`).bind(st.id).first();
-      if (!open) await env.DB.prepare('INSERT INTO reset_requests (institute_id, student_id, created_at) VALUES (?,?,?)').bind(ins.id, st.id, now()).run();
+      if (!open) {
+        await env.DB.prepare('INSERT INTO reset_requests (institute_id, student_id, created_at) VALUES (?,?,?)').bind(ins.id, st.id, now()).run();
+        const c = await env.DB.prepare('SELECT s.coordinator_id FROM users u JOIN sections s ON s.id = u.section_id WHERE u.id = ?').bind(st.id).first();
+        if (c?.coordinator_id) await notify(env, ins.id, [c.coordinator_id], 'A student asked for a password reset', '#/my-section');
+      }
     }
     return json({ ok: true });
   }
@@ -1677,7 +1698,7 @@ async function handle(request, env, ctx) {
     // (creator only: checked by ownAssessment)
     const a = await ownAssessment(+m[1]);
     if (NEEDS_REVIEW.includes(a.type) && a.stage !== 'approved') fail(409, 'This paper needs DQAC moderation and HOD approval before it can be published.');
-    await env.DB.prepare(`UPDATE assessments SET status='published' WHERE id = ?`).bind(a.id).run();
+    await env.DB.prepare(`UPDATE assessments SET status='published', code_seed = COALESCE(code_seed, ?) WHERE id = ?`).bind(hex(crypto.getRandomValues(new Uint8Array(16))), a.id).run();
     await audit('assessment published', `${a.type} ${a.number} ${a.subject_code}`);
     return json({ ok: true });
   }
@@ -1780,6 +1801,7 @@ async function handle(request, env, ctx) {
     const v = await lastVersion(a.id);
     const due = typeof b.due_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date) ? b.due_date : null;
     await env.DB.batch(ids.map((id) => env.DB.prepare('INSERT OR IGNORE INTO reviews (institute_id, assessment_id, version, reviewer_id, assigned_at, due_date) VALUES (?,?,?,?,?,?)').bind(inst, a.id, v, id, now(), due)));
+    await notify(env, inst, ids, `Paper to review: ${a.type} ${a.number} · ${a.subject_code}`, `#/a/${a.id}`);
     await audit('reviewers assigned', `${a.type} ${a.number} ${a.subject_code} v${v}: ${ids.length} member(s)`);
     return json({ ok: true });
   }
@@ -1804,7 +1826,10 @@ async function handle(request, env, ctx) {
     // When every reviewer of this version has answered and any asked for changes, the paper goes back to its author.
     const pending = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(decision = 'resubmit') AS re FROM reviews WHERE assessment_id = ? AND version = ? AND status != 'done'`).bind(a.id, r.version).first();
     const anyResubmit = await env.DB.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE assessment_id = ? AND version = ? AND decision = 'resubmit'`).bind(a.id, r.version).first();
-    if (!pending.n && anyResubmit.n) await env.DB.prepare(`UPDATE assessments SET stage = 'changes' WHERE id = ?`).bind(a.id).run();
+    if (!pending.n && anyResubmit.n) {
+      await env.DB.prepare(`UPDATE assessments SET stage = 'changes' WHERE id = ?`).bind(a.id).run();
+      await notify(env, inst, [a.faculty_id], `DQAC asked for changes: ${a.type} ${a.number} · ${a.subject_code}`, `#/a/${a.id}`);
+    }
     await audit('paper reviewed', `${a.type} ${a.number} ${a.subject_code} v${r.version}: ${decision === 'ok' ? 'fit' : 'resubmit'}`);
     return json({ ok: true });
   }
@@ -1819,6 +1844,7 @@ async function handle(request, env, ctx) {
     if (st.done < st.n) fail(409, 'Some DQAC members have not submitted their review yet');
     if (st.re) fail(409, 'A reviewer asked for changes');
     await env.DB.prepare(`UPDATE assessments SET stage = 'approved', approved_by = ?, approved_by_id = ?, approved_at = ? WHERE id = ?`).bind(user.name, user.id, now(), a.id).run();
+    await notify(env, inst, [a.faculty_id], `Paper approved by HOD: ${a.type} ${a.number} · ${a.subject_code}. You can publish it now.`, `#/a/${a.id}`);
     await audit('paper approved by HOD', `${a.type} ${a.number} ${a.subject_code} v${v}`);
     return json({ ok: true });
   }
@@ -1883,8 +1909,11 @@ async function handle(request, env, ctx) {
       .all();
     const pa = paperOf(await env.DB.prepare('SELECT paper_json FROM assessments WHERE id = ?').bind(t.assessment_id).first());
     const total = countBest(pa.parts, results, t.status === 'published' ? 'final_marks' : 'llm_marks');
+    const rechecks = (await env.DB.prepare(`SELECT r.id, r.reason, r.status, r.response, r.old_marks, r.new_marks, r.created_at, q.seq
+      FROM rechecks r JOIN answers a ON a.id = r.answer_id JOIN questions q ON q.id = a.question_id WHERE r.attempt_id = ? ORDER BY r.id`).bind(t.id).all()).results;
     return json({
       ...t,
+      rechecks,
       total,
       max: pa.max_marks || results.reduce((s, r) => s + r.max_marks, 0),
       parts: pa.parts || null,
@@ -1936,10 +1965,155 @@ async function handle(request, env, ctx) {
       const remark = typeof g.remark === 'string' ? g.remark.trim().slice(0, 1000) : '';
       return env.DB.prepare('UPDATE answers SET final_marks = ?, faculty_remark = ? WHERE id = ?').bind(marks, remark, r.id);
     });
-    stmts.push(env.DB.prepare(`UPDATE attempts SET status='published' WHERE id = ?`).bind(t.id));
+    stmts.push(env.DB.prepare(`UPDATE attempts SET status='published', published_at = COALESCE(published_at, ?) WHERE id = ?`).bind(now(), t.id));
     await env.DB.batch(stmts);
+    await notify(env, inst, [t.student_id], `Result declared: ${t.type} ${t.number} · ${t.subject_code}`, `#/result/${t.id}`);
     await audit('result approved', `${t.type} ${t.number} ${t.subject_code}, roll no ${t.roll_no}`);
     return json({ ok: true });
+  }
+
+  // ----- start code for the faculty's screen -----
+  if ((m = route('GET', /^\/api\/assessments\/(\d+)\/start-code$/))) {
+    const a = await readAssessment(+m[1]);
+    if (a.status !== 'published' || NO_START_CODE.includes(a.type)) return json({ code: null });
+    const st = await settingsRow();
+    const ms = st.code_minutes * 60e3;
+    const w = Math.floor(Date.now() / ms);
+    if (!a.code_seed) {
+      a.code_seed = hex(crypto.getRandomValues(new Uint8Array(16)));
+      await env.DB.prepare('UPDATE assessments SET code_seed = ? WHERE id = ? AND code_seed IS NULL').bind(a.code_seed, a.id).run();
+    }
+    return json({ code: await startCode(a.code_seed, w), changes_at: new Date((w + 1) * ms).toISOString(), minutes: st.code_minutes });
+  }
+
+  // ----- notifications -----
+  if (route('GET', /^\/api\/notifications$/)) {
+    const { results } = await env.DB.prepare('SELECT id, text, link, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30').bind(user.id).all();
+    return json({ unread: results.filter((x) => !x.read_at).length, items: results });
+  }
+  if (route('POST', /^\/api\/notifications\/read$/)) {
+    await env.DB.prepare('UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL').bind(now(), user.id).run();
+    return json({ ok: true });
+  }
+
+  // ----- re-check claims: the faculty answers, and may change the marks -----
+  if ((m = route('POST', /^\/api\/rechecks\/(\d+)$/))) {
+    can('approve');
+    const r = await env.DB.prepare(`SELECT r.*, a.attempt_id AS att, q.max_marks, q.kind, s.negative, a.final_marks, t.student_id, t.assessment_id
+      FROM rechecks r JOIN answers a ON a.id = r.answer_id JOIN questions q ON q.id = a.question_id JOIN attempts t ON t.id = r.attempt_id JOIN assessments s ON s.id = t.assessment_id
+      WHERE r.id = ? AND r.institute_id = ?`).bind(+m[1], inst).first();
+    if (!r) fail(404, 'Request not found');
+    await staffAttempt(r.attempt_id); // the faculty must be able to see this attempt
+    if (r.status !== 'open') fail(409, 'This request is already answered');
+    const b = await body(request);
+    const status = b.status === 'accepted' ? 'accepted' : b.status === 'rejected' ? 'rejected' : fail(400, 'Accept or reject the request');
+    const response = str(b.response, 'Reply to the student', 1000);
+    let newMarks = null;
+    if (status === 'accepted') {
+      newMarks = Number(b.marks);
+      const min = r.kind === 'mcq' ? -Math.round((r.negative || 0) * r.max_marks * 100) / 100 : 0;
+      if (!Number.isFinite(newMarks) || newMarks < min || newMarks > r.max_marks) fail(400, `Marks must be between ${min} and ${r.max_marks}`);
+    }
+    await env.DB.batch([
+      env.DB.prepare('UPDATE rechecks SET status = ?, response = ?, old_marks = ?, new_marks = ?, resolved_at = ?, resolved_by = ? WHERE id = ?')
+        .bind(status, response, r.final_marks, newMarks, now(), user.name, r.id),
+      ...(newMarks !== null ? [env.DB.prepare('UPDATE answers SET final_marks = ? WHERE id = ?').bind(newMarks, r.answer_id)] : []),
+    ]);
+    await notify(env, inst, [r.student_id], `Re-check answered${newMarks !== null ? `: marks changed to ${newMarks}` : ''}`, `#/result/${r.attempt_id}`);
+    await audit('re-check answered', `attempt ${r.attempt_id}: ${status}${newMarks !== null ? ` ${r.final_marks} → ${newMarks}` : ''}`);
+    return json({ ok: true });
+  }
+  if (route('GET', /^\/api\/rechecks$/)) {
+    staff();
+    const sc = scope();
+    const { results } = await env.DB.prepare(`SELECT r.id, r.attempt_id, r.reason, r.created_at, q.seq, q.label, u.name AS student, s.type, s.number, s.subject_code
+      FROM rechecks r JOIN attempts t ON t.id = r.attempt_id JOIN assessments s ON s.id = t.assessment_id JOIN answers a ON a.id = r.answer_id
+      JOIN questions q ON q.id = a.question_id JOIN users u ON u.id = t.student_id
+      WHERE r.status = 'open' AND ${sc.sql} ORDER BY r.id`).bind(...sc.binds).all();
+    return json(results);
+  }
+
+  // ----- reports: A53 rank sheet (section-wise by default), and the institute overview -----
+  if (route('GET', /^\/api\/reports\/rank-sheet$/)) {
+    staff();
+    const sec = await env.DB.prepare('SELECT s.*, p.name AS programme_name FROM sections s LEFT JOIN programmes p ON p.id = s.programme_id WHERE s.id = ? AND s.institute_id = ?')
+      .bind(Number(url.searchParams.get('section')) || 0, inst).first();
+    if (!sec) fail(404, 'Choose a section');
+    const allowed = user.perms.reports === 'institute' || user.perms.manage || sec.coordinator_id === user.id
+      || (user.role === 'hod' && user.department_id && user.department_id === sec.department_id);
+    if (!allowed) fail(403, 'Rank sheets are for the HOD, the class coordinator and institute-level staff');
+    const type = String(url.searchParams.get('type') || 'Sessional');
+    const number = Number(url.searchParams.get('number')) || 0; // 0 = all of that type together
+    const branch = url.searchParams.get('scope') === 'branch';
+    const st = await settingsRow();
+    // Sections ranked together: just this one, or every section of the same programme and semester (branch-wise).
+    const secIds = branch
+      ? (await env.DB.prepare('SELECT id FROM sections WHERE institute_id = ? AND programme_id IS ? AND semester IS ?').bind(inst, sec.programme_id, sec.semester).all()).results.map((x) => x.id)
+      : [sec.id];
+    const ph = secIds.map(() => '?').join(',');
+    const assess = (await env.DB.prepare(`SELECT DISTINCT s.id, s.subject_code, s.subject_name, s.number, s.paper_json, f.name AS faculty
+      FROM assessments s JOIN assessment_sections x ON x.assessment_id = s.id JOIN users f ON f.id = s.faculty_id
+      WHERE s.institute_id = ? AND s.type = ? ${number ? 'AND s.number = ?' : ''} AND x.section_id IN (${ph}) AND s.status = 'published' ORDER BY s.subject_code, s.number`)
+      .bind(inst, type, ...(number ? [number] : []), ...secIds).all()).results;
+    const studs = (await env.DB.prepare(`SELECT u.id, u.name, u.univ_roll, u.college_roll, u.roll_no, s.name AS section FROM users u JOIN sections s ON s.id = u.section_id
+      WHERE u.section_id IN (${ph}) AND u.role = 'student' AND u.status = 'active' ORDER BY s.name, COALESCE(u.college_roll, u.univ_roll, u.roll_no), u.name`).bind(...secIds).all()).results;
+    const subjects = new Map();
+    for (const a of assess) {
+      const key = a.subject_code;
+      if (!subjects.has(key)) subjects.set(key, { code: key, name: a.subject_name, faculty: a.faculty, max: 0, ids: [] });
+      const sj = subjects.get(key);
+      sj.ids.push(a.id);
+      sj.max += paperOf(a).max_marks || 0;
+    }
+    const marks = new Map(); // student → code → total
+    for (const a of assess) {
+      const P = paperOf(a);
+      const rows = (await env.DB.prepare(`SELECT t.student_id, an.final_marks, q.part, q.qgroup FROM attempts t JOIN answers an ON an.attempt_id = t.id
+        JOIN questions q ON q.id = an.question_id WHERE t.assessment_id = ? AND t.status = 'published'`).bind(a.id).all()).results;
+      const by = new Map();
+      rows.forEach((r) => { if (!by.has(r.student_id)) by.set(r.student_id, []); by.get(r.student_id).push(r); });
+      for (const [sid, list] of by) {
+        if (!marks.has(sid)) marks.set(sid, {});
+        const cur = marks.get(sid);
+        cur[a.subject_code] = (cur[a.subject_code] || 0) + countBest(P.parts, list, 'final_marks');
+      }
+    }
+    const maxTotal = [...subjects.values()].reduce((x, y) => x + y.max, 0);
+    const out = studs.map((u) => {
+      const mk = marks.get(u.id) || {};
+      const total = Math.round(Object.values(mk).reduce((x, y) => x + y, 0) * 100) / 100;
+      const pass = [...subjects.values()].every((sj) => sj.max === 0 || ((mk[sj.code] ?? 0) / sj.max) * 100 >= st.pass_percent);
+      return { univ_roll: u.univ_roll, college_roll: u.college_roll || u.roll_no, name: u.name, section: u.section, marks: mk, total,
+        pct: maxTotal ? Math.round((total / maxTotal) * 10000) / 100 : 0, pass, absent: !marks.has(u.id) };
+    });
+    // Ties share a rank: 1, 1, 3.
+    const sorted = out.filter((x) => !x.absent).map((x) => x.total).sort((p, q) => q - p);
+    out.forEach((x) => (x.rank = x.absent ? null : 1 + sorted.filter((t) => t > x.total).length));
+    return json({ section: sec.name, programme: sec.programme_name || sec.programme, semester: sec.semester, scope: branch ? 'branch' : 'section',
+      type, number, pass_percent: st.pass_percent, session: st.session,
+      subjects: [...subjects.values()].map(({ ids, ...x }) => x), max_total: maxTotal, students: out });
+  }
+
+  if (route('GET', /^\/api\/reports\/overview$/)) {
+    if (!(user.perms.reports === 'institute' || user.perms.manage)) fail(403, 'Institute-level staff only');
+    const { results } = await env.DB.prepare(`SELECT d.id, d.name,
+        (SELECT COUNT(*) FROM users WHERE department_id = d.id AND role != 'student') AS faculty,
+        (SELECT COUNT(*) FROM assessments WHERE department_id = d.id) AS papers,
+        (SELECT COUNT(*) FROM assessments WHERE department_id = d.id AND stage IN ('review','changes')) AS in_moderation,
+        (SELECT COUNT(*) FROM assessments WHERE department_id = d.id AND status = 'published') AS published,
+        (SELECT COUNT(*) FROM attempts t JOIN assessments s ON s.id = t.assessment_id WHERE s.department_id = d.id AND t.status = 'evaluated') AS awaiting_approval,
+        (SELECT COUNT(*) FROM attempts t JOIN assessments s ON s.id = t.assessment_id WHERE s.department_id = d.id AND t.status = 'published') AS results
+      FROM departments d WHERE d.institute_id = ? ORDER BY d.name`).bind(inst).all();
+    return json(results);
+  }
+
+  // Sections the user may pull a rank sheet for.
+  if (route('GET', /^\/api\/reports\/sections$/)) {
+    staff();
+    const all = user.perms.reports === 'institute' || user.perms.manage;
+    const { results } = await env.DB.prepare(`SELECT id, name FROM sections WHERE institute_id = ? AND (? OR coordinator_id = ? OR (department_id = ? AND ?)) ORDER BY name`)
+      .bind(inst, all ? 1 : 0, user.id, user.department_id ?? 0, user.role === 'hod' ? 1 : 0).all();
+    return json(results);
   }
 
   // ----- student -----
@@ -1972,6 +2146,16 @@ async function handle(request, env, ctx) {
               OR EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = s.id AND x.section_id = ?)) AND s.institute_id = ?`,
     ).bind(+m[1], user.section_id, inst).first();
     if (!a) fail(404, 'Assessment not found');
+    // Lab tests open only with the start code the faculty reads out (checked again when resuming on another computer).
+    if (!NO_START_CODE.includes(a.type)) {
+      const b = await request.json().catch(() => ({}));
+      const given = String(b.code || '').trim().toUpperCase();
+      if (!given) fail(428, 'Enter the start code your faculty gives in the lab');
+      const st = await settingsRow();
+      const w = Math.floor(Date.now() / (st.code_minutes * 60e3));
+      const seed = a.code_seed || '';
+      if (!seed || (given !== await startCode(seed, w) && given !== await startCode(seed, w - 1))) fail(403, 'Wrong or expired start code. Ask your faculty for the current code.');
+    }
     let t = await env.DB.prepare('SELECT * FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(a.id, user.id).first();
     const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json, part, label, qgroup FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
     if (!t) {
@@ -2074,25 +2258,77 @@ async function handle(request, env, ctx) {
   }
 
   // Result is visible only after it has been published (faculty approval, or instant mode).
+  if ((m = route('POST', /^\/api\/attempts\/(\d+)\/recheck$/))) {
+    student();
+    const t = await ownAttemptAsStudent(+m[1]);
+    if (t.status !== 'published') fail(409, 'The result is not declared yet');
+    if (Date.now() - Date.parse(t.published_at || t.submitted_at || 0) > 7 * 86400e3) fail(409, 'Re-check requests close 7 days after the result');
+    const b = await body(request);
+    const an = await env.DB.prepare('SELECT a.id FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? AND q.seq = ?').bind(t.id, Number(b.seq) || 0).first();
+    if (!an) fail(404, 'Question not found');
+    const open = await env.DB.prepare(`SELECT 1 FROM rechecks WHERE answer_id = ? AND status = 'open'`).bind(an.id).first();
+    if (open) fail(409, 'You have already asked for a re-check of this question');
+    await env.DB.prepare('INSERT INTO rechecks (institute_id, attempt_id, answer_id, reason, created_at) VALUES (?,?,?,?,?)')
+      .bind(inst, t.id, an.id, str(b.reason, 'Reason', 600), now()).run();
+    const s2 = await env.DB.prepare('SELECT faculty_id, type, number, subject_code FROM assessments WHERE id = ?').bind(t.assessment_id).first();
+    await notify(env, inst, [s2.faculty_id], `Re-check request: ${user.name}, ${s2.type} ${s2.number} · ${s2.subject_code}`, `#/review/${t.id}`);
+    return json({ ok: true });
+  }
+
   if ((m = route('GET', /^\/api\/attempts\/(\d+)\/result$/))) {
     student();
     const t = await ownAttemptAsStudent(+m[1]);
     if (t.status !== 'published') return json({ published: false, status: t.status });
-    const a = await env.DB.prepare('SELECT subject_name, subject_code, type, number, paper_json FROM assessments WHERE id = ?').bind(t.assessment_id).first();
+    const a = await env.DB.prepare('SELECT id, subject_name, subject_code, type, number, paper_json, subject_id FROM assessments WHERE id = ?').bind(t.assessment_id).first();
     const pa = paperOf(a);
     delete a.paper_json;
     const { results } = await env.DB.prepare(
-      `SELECT q.seq, q.part, q.label, q.qgroup, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
+      `SELECT a.id AS answer_id, q.seq, q.part, q.label, q.qgroup, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index, q.co, q.model_answer,
               a.text, a.final_marks, a.llm_marks, a.llm_json, a.faculty_remark
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
       .bind(t.id)
       .all();
     const total = countBest(pa.parts, results, 'final_marks');
+    const max = pa.max_marks || results.reduce((s2, r) => s2 + r.max_marks, 0);
+    // Rank, once every result of the student's section (or the whole branch, by the institute's setting) is approved. Ties share a rank.
+    const st = await settingsRow();
+    const all = (await env.DB.prepare(`SELECT t.id, t.status, u.section_id FROM attempts t JOIN users u ON u.id = t.student_id WHERE t.assessment_id = ?`).bind(t.assessment_id).all()).results;
+    const peers = st.rank_scope === 'branch' ? all : all.filter((x) => x.section_id === user.section_id);
+    let rank = null;
+    if (peers.length && peers.every((x) => x.status === 'published')) {
+      const marks = (await env.DB.prepare(`SELECT an.attempt_id, an.final_marks, q.part, q.qgroup FROM answers an JOIN questions q ON q.id = an.question_id
+        JOIN attempts t ON t.id = an.attempt_id WHERE t.assessment_id = ?`).bind(t.assessment_id).all()).results;
+      const totals = peers.map((p) => countBest(pa.parts, marks.filter((r) => r.attempt_id === p.id).map((r) => ({ ...r })), 'final_marks'));
+      rank = { rank: 1 + totals.filter((x) => x > total).length, of: peers.length, scope: st.rank_scope };
+    }
+    // CO-wise performance on the questions that count, and a preparedness score (0-100).
+    const counted = results.filter((r) => r.counted);
+    const cosRow = a.subject_id ? await env.DB.prepare('SELECT cos_json FROM subjects WHERE id = ?').bind(a.subject_id).first() : null;
+    const coText = new Map(JSON.parse(cosRow?.cos_json || '[]').map((c) => [c.co, c.text]));
+    const coMap = new Map();
+    for (const r of counted.filter((x) => x.co)) {
+      const c = coMap.get(r.co) || { co: r.co, got: 0, max: 0 };
+      c.got += Math.max(0, r.final_marks ?? 0); c.max += r.max_marks;
+      coMap.set(r.co, c);
+    }
+    const cos = [...coMap.values()].sort((x, y) => x.co.localeCompare(y.co)).map((c) => {
+      const pct = c.max ? Math.round((c.got / c.max) * 100) : 0;
+      return { co: c.co, text: coText.get(c.co) || '', pct, band: pct >= 70 ? 'Strong' : pct >= 40 ? 'Developing' : 'Needs work' };
+    });
+    const pctAll = max ? Math.max(0, (total / max) * 100) : 0;
+    const coAvg = cos.length ? cos.reduce((x, c) => x + c.pct, 0) / cos.length : pctAll;
+    const tried = counted.length ? counted.filter((r) => String(r.text || '').trim()).length / counted.length : 0;
+    const preparedness = Math.round(0.6 * pctAll + 0.3 * coAvg + 0.1 * tried * 100);
+    const rc = (await env.DB.prepare('SELECT answer_id, reason, status, response, old_marks, new_marks, created_at, resolved_at FROM rechecks WHERE attempt_id = ? ORDER BY id').bind(t.id).all()).results;
+    const since = Date.parse(t.published_at || t.submitted_at || 0);
+    const recheckOpen = Date.now() - since < 7 * 86400e3;
     return json({
       published: true,
       assessment: a,
       total,
+      rank, cos, preparedness, recheck_open: recheckOpen,
+      recheck_until: new Date(since + 7 * 86400e3).toISOString(),
       max: pa.max_marks || results.reduce((s, r) => s + r.max_marks, 0),
       answers: results.map((r) => {
         const llm = r.llm_json ? JSON.parse(r.llm_json) : null;
@@ -2103,6 +2339,9 @@ async function handle(request, env, ctx) {
           part: r.part,
           label: r.label,
           counted: r.counted,
+          co: r.co,
+          model_answer: r.kind === 'mcq' ? '' : r.model_answer,
+          rechecks: rc.filter((x) => x.answer_id === r.answer_id),
           kind: r.kind,
           question: r.qtext,
           answer: r.text,

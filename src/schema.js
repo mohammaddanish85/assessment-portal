@@ -230,6 +230,30 @@ export const SCHEMA = [
     user_name TEXT,
     at TEXT NOT NULL
   )`,
+  // A student's claim for re-checking one answer (within 7 days of the result).
+  `CREATE TABLE IF NOT EXISTS rechecks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    attempt_id INTEGER NOT NULL,
+    answer_id INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    response TEXT,
+    old_marks REAL,
+    new_marks REAL,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolved_by TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER,
+    user_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    link TEXT,
+    created_at TEXT NOT NULL,
+    read_at TEXT
+  )`,
   `CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     institute_id INTEGER,
@@ -293,7 +317,8 @@ export async function prepareDatabase(db) {
     users: { emp_id: 'TEXT', designation: 'TEXT', post: 'TEXT', univ_roll: 'TEXT', college_roll: 'TEXT', email: 'TEXT', mobile: 'TEXT',
       programme_id: 'INTEGER', semester: 'INTEGER', status: "TEXT NOT NULL DEFAULT 'active'", signature: 'TEXT' },
     sections: { programme_id: 'INTEGER', semester: 'INTEGER', coordinator_id: 'INTEGER' },
-    assessments: { subject_id: 'INTEGER', stage: "TEXT NOT NULL DEFAULT 'draft'", approved_by: 'TEXT', approved_at: 'TEXT', approved_by_id: 'INTEGER' },
+    attempts: { published_at: 'TEXT' },
+    assessments: { code_seed: 'TEXT', subject_id: 'INTEGER', stage: "TEXT NOT NULL DEFAULT 'draft'", approved_by: 'TEXT', approved_at: 'TEXT', approved_by_id: 'INTEGER' },
     subjects: { department_id: 'INTEGER', programme_id: 'INTEGER', type: "TEXT NOT NULL DEFAULT 'Theory'", elective_group: 'TEXT', credits: 'REAL',
       cos_json: "TEXT NOT NULL DEFAULT '[]'" },
   };

@@ -536,3 +536,54 @@ function a51Doc(a, d, head) {
     ${d.approved_at ? `<p>Verified and approved by <b>${esc(d.approved_by)}</b> on ${fmt(d.approved_at)}.</p><p class="sign">${sig(a.approved_by_id)}<br>${esc(d.approved_by)}, HOD</p>` : '<p>Awaiting HOD approval.</p>'}
   </section>`;
 }
+
+// ---------- reports: A53 rank sheet, toppers, institute overview ----------
+
+async function viewReports() {
+  const seq = nav_seq;
+  const inst = user.perms.reports === 'institute' || user.perms.manage;
+  const [sections, overview, settings] = await Promise.all([api('GET', '/reports/sections'), inst ? api('GET', '/reports/overview') : Promise.resolve(null), api('GET', '/settings')]);
+  if (seq !== nav_seq) return;
+  app.innerHTML = `<h1>Reports</h1>
+    ${overview ? `<div class="card"><h2>Institute overview</h2>${tbl(['Department', 'Faculty', 'Papers', 'In moderation', 'Published', 'Results awaiting approval', 'Results declared'],
+      overview.map((x) => `<tr><td>${esc(x.name)}</td><td>${x.faculty}</td><td>${x.papers}</td><td>${x.in_moderation}</td><td>${x.published}</td><td>${x.awaiting_approval ? `<span class="pill warn">${x.awaiting_approval}</span>` : 0}</td><td>${x.results}</td></tr>`), 'No departments yet.')}</div>` : ''}
+    <div class="card no-print"><h2>Rank sheet (A53)</h2>
+      <form id="frs" class="row"><label>Section<select name="section" required>${sections.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>
+        <label>Test<select name="type"><option>Sessional</option><option>Mid Term</option><option>Assignment</option><option>MCQ Test</option><option>Hybrid</option></select></label>
+        <label style="max-width:150px">Number<select name="number"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="0">All together</option></select></label>
+        <label>Rank within<select name="scope"><option value="section"${settings.settings.rank_scope !== 'branch' ? ' selected' : ''}>Section</option><option value="branch"${settings.settings.rank_scope === 'branch' ? ' selected' : ''}>Branch (all sections)</option></select></label>
+        <p><button>Show</button></p></form></div>
+    <div id="rs"></div>`;
+  const out = document.getElementById('rs');
+  let last = null;
+  document.getElementById('frs').onsubmit = act(async (e) => {
+    const q = new URLSearchParams(Object.fromEntries(new FormData(e.target)));
+    const d = await api('GET', `/reports/rank-sheet?${q}`);
+    last = d;
+    const testName = `${d.type}${d.number ? ` ${d.number}` : ' (all)'}`;
+    const top = d.students.filter((x) => x.rank && x.rank <= 3).sort((p, r) => p.rank - r.rank);
+    out.innerHTML = `<div class="card"><div class="between no-print"><span class="small muted">${d.students.length} students · ${d.subjects.length} subjects</span>
+        <span><button type="button" class="ghost small" id="rsx">Download Excel</button> <button type="button" class="ghost small" onclick="window.print()">Print / Save as PDF</button></span></div>
+      <div class="paper"><section class="doc">${letterhead(settings)}
+      <h1 style="text-align:center">${esc(testName)} marks and rank sheet</h1>
+      <p style="text-align:center">${esc(d.session || '')} · ${esc(d.programme || '')}${d.semester ? ` · Semester ${d.semester}` : ''} · ${d.scope === 'branch' ? 'All sections (branch rank)' : `Section: ${esc(d.section)}`}</p>
+      ${top.length ? `<p><b>Toppers:</b> ${top.map((x) => `${x.rank}. ${esc(x.name)} (${num(x.total)})`).join(' · ')}</p>` : ''}
+      <div class="scroll"><table class="rank"><thead><tr><th>Sl.</th><th>Roll no</th><th>Name</th>${d.scope === 'branch' ? '<th>Section</th>' : ''}${d.subjects.map((sj) => `<th title="${esc(sj.name)}">${esc(sj.code)}<br><span class="small muted">${esc(sj.faculty)}</span><br>/${num(sj.max)}</th>`).join('')}
+        <th>Total<br>/${num(d.max_total)}</th><th>%</th><th>Pass / Fail</th><th>Rank</th></tr></thead><tbody>
+        ${d.students.map((x, i) => `<tr><td>${i + 1}</td><td class="nowrap">${esc(x.univ_roll || x.college_roll || '')}</td><td>${esc(x.name)}</td>${d.scope === 'branch' ? `<td class="small">${esc(x.section)}</td>` : ''}
+          ${d.subjects.map((sj) => `<td>${x.marks[sj.code] === undefined ? '<span class="muted">AB</span>' : num(x.marks[sj.code])}</td>`).join('')}
+          <td><b>${x.absent ? '–' : num(x.total)}</b></td><td>${x.absent ? '–' : num(x.pct)}</td><td>${x.absent ? 'Absent' : x.pass ? 'Pass' : '<span class="bad-text">Fail</span>'}</td><td>${x.rank ?? '–'}</td></tr>`).join('')}
+      </tbody></table></div><p class="small">Pass mark: ${d.pass_percent}% in every subject. Equal totals share a rank.</p>
+      <div class="signs"><b>Class coordinator</b><b>HOD</b></div></section></div></div>`;
+    document.getElementById('rsx').onclick = act(async () => {
+      await loadXLSX();
+      const rows = [['Sl.', 'Roll no', 'Name', ...(d.scope === 'branch' ? ['Section'] : []), ...d.subjects.map((sj) => `${sj.code} (${sj.max})`), `Total (${d.max_total})`, '%', 'Pass/Fail', 'Rank'],
+        ...d.students.map((x, i) => [i + 1, x.univ_roll || x.college_roll || '', x.name, ...(d.scope === 'branch' ? [x.section] : []), ...d.subjects.map((sj) => x.marks[sj.code] ?? 'AB'),
+          x.absent ? '' : x.total, x.absent ? '' : x.pct, x.absent ? 'Absent' : x.pass ? 'Pass' : 'Fail', x.rank ?? ''])];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Rank sheet');
+      XLSX.writeFile(wb, `Rank_sheet_${testName.replace(/\W+/g, '_')}_${d.section.replace(/\W+/g, '_')}.xlsx`);
+    });
+  });
+  if (sections.length) document.getElementById('frs').requestSubmit();
+}
