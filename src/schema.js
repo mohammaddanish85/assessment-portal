@@ -16,6 +16,7 @@ export const SCHEMA = [
     line TEXT NOT NULL DEFAULT '',
     logo TEXT NOT NULL DEFAULT '',
     letterhead TEXT NOT NULL DEFAULT '',
+    format_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
     created_at TEXT NOT NULL
   )`,
@@ -106,7 +107,8 @@ export const SCHEMA = [
     correct_index INTEGER,
     part TEXT NOT NULL DEFAULT '',
     label TEXT NOT NULL DEFAULT '',
-    rbtl INTEGER
+    rbtl INTEGER,
+    qgroup INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,6 +202,9 @@ export async function prepareDatabase(db) {
   if (!q.has('label')) add.push("ALTER TABLE questions ADD COLUMN label TEXT NOT NULL DEFAULT ''");
   if (!q.has('rbtl')) add.push('ALTER TABLE questions ADD COLUMN rbtl INTEGER');
   if (!a.has('paper_json')) add.push("ALTER TABLE assessments ADD COLUMN paper_json TEXT NOT NULL DEFAULT '{}'");
-  if (!(await cols('institutes')).has('letterhead')) add.push("ALTER TABLE institutes ADD COLUMN letterhead TEXT NOT NULL DEFAULT ''");
+  const ic = await cols('institutes');
+  if (!ic.has('letterhead')) add.push("ALTER TABLE institutes ADD COLUMN letterhead TEXT NOT NULL DEFAULT ''");
+  if (!ic.has('format_json')) add.push("ALTER TABLE institutes ADD COLUMN format_json TEXT NOT NULL DEFAULT '{}'");
+  if (!q.has('qgroup')) add.push('ALTER TABLE questions ADD COLUMN qgroup INTEGER');
   if (add.length) await db.batch(add.map((x) => db.prepare(x)));
 }

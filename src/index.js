@@ -109,6 +109,29 @@ async function createUser(env, u) {
   return r.meta.last_row_id;
 }
 
+// ---------- paper structure ----------
+
+const paperOf = (a) => { try { return JSON.parse(a.paper_json || '{}'); } catch { return {}; } };
+const paperMax = (a, fallback) => paperOf(a).max_marks || fallback;
+
+// A part can give a choice ("attempt any 2 of 3"): only the best-scoring questions of that part count.
+// Sets r.counted on every row and returns the counted total. Rows need part, qgroup and the marks field.
+function countBest(parts, rows, key) {
+  rows.forEach((r) => (r.counted = true));
+  for (const p of Array.isArray(parts) ? parts : []) {
+    const groups = new Map();
+    rows.filter((r) => (r.part || '') === p.name).forEach((r) => {
+      const g = groups.get(r.qgroup) || { s: 0, rows: [] };
+      g.s += Number(r[key] ?? 0);
+      g.rows.push(r);
+      groups.set(r.qgroup, g);
+    });
+    if (p.attempt >= groups.size) continue;
+    [...groups.values()].sort((x, y) => y.s - x.s).slice(p.attempt).forEach((g) => g.rows.forEach((r) => (r.counted = false)));
+  }
+  return Math.round(rows.reduce((s, r) => s + (r.counted ? Number(r[key] ?? 0) : 0), 0) * 100) / 100;
+}
+
 // ---------- evaluation ----------
 
 // MCQ: checked against the answer key. No LLM involved, so the result is exact.
@@ -443,8 +466,10 @@ async function handle(request, env, ctx) {
 
   // Institute details printed on documents. Readable by every signed-in member of the institute.
   if (route('GET', /^\/api\/settings$/)) {
-    const i = await env.DB.prepare('SELECT name, line, logo, letterhead, code FROM institutes WHERE id = ?').bind(inst).first();
-    return json({ institute: i.name, line: i.line, logo: i.logo, letterhead: i.letterhead, code: i.code });
+    const i = await env.DB.prepare('SELECT name, line, logo, letterhead, format_json, code FROM institutes WHERE id = ?').bind(inst).first();
+    let format = {};
+    try { format = JSON.parse(i.format_json || '{}'); } catch {}
+    return json({ institute: i.name, line: i.line, logo: i.logo, letterhead: i.letterhead, format, code: i.code });
   }
 
   const isStaff = STAFF_ROLES.includes(user.role);
@@ -536,8 +561,16 @@ async function handle(request, env, ctx) {
     const lh = typeof b.letterhead === 'string' ? b.letterhead : '';
     if (lh && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(lh)) fail(400, 'Letterhead must be a PNG or JPG image');
     if (lh.length > 950000) fail(400, 'Letterhead image is too large (keep it under 700 KB)');
-    await env.DB.prepare('UPDATE institutes SET name = ?, line = ?, logo = ?, letterhead = ? WHERE id = ?')
-      .bind(str(b.institute, 'Institute name', 150), typeof b.line === 'string' ? b.line.trim().slice(0, 200) : '', logo, lh, inst).run();
+    // Question paper format of this institute (column names, signature lines…).
+    const fi = b.format && typeof b.format === 'object' ? b.format : {};
+    const ft = (k, n) => (typeof fi[k] === 'string' ? fi[k].trim().slice(0, n) : '');
+    const format = {
+      tax_exam: ft('tax_exam', 40), tax_exam_style: fi.tax_exam_style === 'name' ? 'name' : 'code', tax_code: ft('tax_code', 10),
+      tax_asg: ft('tax_asg', 40), tax_asg_style: fi.tax_asg_style === 'code' ? 'code' : 'name',
+      sign_exam: ft('sign_exam', 200), sign_asg: ft('sign_asg', 200), roll: fi.roll !== false,
+    };
+    await env.DB.prepare('UPDATE institutes SET name = ?, line = ?, logo = ?, letterhead = ?, format_json = ? WHERE id = ?')
+      .bind(str(b.institute, 'Institute name', 150), typeof b.line === 'string' ? b.line.trim().slice(0, 200) : '', logo, lh, JSON.stringify(format), inst).run();
     return json({ ok: true });
   }
 
@@ -774,7 +807,7 @@ async function handle(request, env, ctx) {
     )
       .bind(...sc.binds)
       .all();
-    return json(results.map((a) => ({ ...a, mine: a.faculty_id === user.id })));
+    return json(results.map((a) => ({ ...a, total_marks: paperMax(a, a.total_marks), paper_json: undefined, mine: a.faculty_id === user.id })));
   }
 
   if (route('POST', /^\/api\/assessments$/)) {
@@ -801,8 +834,26 @@ async function handle(request, env, ctx) {
     const paper = {
       title: ptxt('title', 150), programme: ptxt('programme', 150), session: ptxt('session', 40), units: ptxt('units', 60),
       instructions: ptxt('instructions', 2000), cos: ptxt('cos', 3000), intro: ptxt('intro', 3000),
-      max_marks: Number(pin.max_marks) > 0 && Number(pin.max_marks) <= 1000 ? Number(pin.max_marks) : null,
+      max_marks: Number(pin.max_marks) > 0 && Number(pin.max_marks) <= 1000 ? Number(pin.max_marks) : fail(400, 'Enter the maximum marks of the paper'),
     };
+    // Paper structure: parts, how many questions each has, sub-parts per question, and how many the student attempts.
+    const partsIn = Array.isArray(pin.parts) ? pin.parts : [];
+    if (!partsIn.length || partsIn.length > 6) fail(400, 'Set up the paper structure (1 to 6 parts)');
+    const int = (v, lo, hi, what) => (Number.isInteger(v) && v >= lo && v <= hi ? v : fail(400, `${what} must be ${lo} to ${hi}`));
+    paper.parts = partsIn.map((p, i) => {
+      const name = typeof p.name === 'string' ? p.name.trim().slice(0, 10) : '';
+      if (partsIn.length > 1 && !name) fail(400, `Part ${i + 1}: give the part a name (e.g. A)`);
+      const questions = int(p.questions, 1, 40, `Part ${name || i + 1}: number of questions`);
+      return {
+        name,
+        kind: type === 'MCQ Test' ? 'mcq' : type === 'Hybrid' && p.kind === 'mcq' ? 'mcq' : 'descriptive',
+        questions,
+        subparts: int(p.subparts, 1, 15, `Part ${name || i + 1}: sub-parts per question`),
+        attempt: int(p.attempt, 1, questions, `Part ${name || i + 1}: questions to attempt`),
+        style: p.style === 'roman' ? 'roman' : 'alpha',
+      };
+    });
+    if (new Set(paper.parts.map((p) => p.name)).size !== paper.parts.length) fail(400, 'Two parts have the same name');
     const subject = await env.DB.prepare('SELECT name, code FROM subjects WHERE id = ? AND institute_id = ?').bind(b.subject_id ?? 0, inst).first();
     if (!subject) fail(400, 'Choose a subject');
     const sectionIds = [...new Set(Array.isArray(b.section_ids) ? b.section_ids.filter(Number.isInteger) : [])];
@@ -810,7 +861,7 @@ async function handle(request, env, ctx) {
     const known = await env.DB.prepare(`SELECT COUNT(*) AS n FROM sections WHERE institute_id = ? AND id IN (${sectionIds.map(() => '?').join(',')})`).bind(inst, ...sectionIds).first();
     if (known.n !== sectionIds.length) fail(400, 'Unknown section');
     if (!Array.isArray(b.questions) || !b.questions.length) fail(400, 'Add at least one question');
-    if (b.questions.length > 30) fail(400, 'At most 30 questions');
+    if (b.questions.length > 80) fail(400, 'At most 80 questions');
 
     const questions = b.questions.map((q, i) => {
       const label = `Question ${i + 1}`;
@@ -818,8 +869,10 @@ async function handle(request, env, ctx) {
       if (!(max > 0 && max <= 100)) fail(400, `${label}: invalid max marks`);
       const co = typeof q.co === 'string' ? q.co.trim().slice(0, 20) : '';
       if (type === 'Mid Term' && !co) fail(400, `${label}: give the CO (required for a Mid Term paper)`);
-      const part = type !== 'Assignment' && typeof q.part === 'string' ? q.part.trim().slice(0, 20) : '';
-      if (type === 'Mid Term' && !part) fail(400, `${label}: give the part (e.g. A)`);
+      const part = typeof q.part === 'string' ? q.part.trim().slice(0, 10) : '';
+      const pdef = paper.parts.find((p) => p.name === part) || fail(400, `${label}: unknown part`);
+      const qgroup = Number.isInteger(q.qgroup) && q.qgroup >= 1 ? q.qgroup : fail(400, `${label}: missing question number`);
+      if ((q.kind === 'mcq' ? 'mcq' : 'descriptive') !== pdef.kind) fail(400, `${label}: part ${part} has only ${pdef.kind === 'mcq' ? 'MCQs' : 'written questions'}`);
       const qlabel = typeof q.label === 'string' ? q.label.trim().slice(0, 12) : '';
       const rbtl = Number.isInteger(q.rbtl) && q.rbtl >= 1 && q.rbtl <= 6 ? q.rbtl : null;
       if (q.kind === 'mcq') {
@@ -829,7 +882,7 @@ async function handle(request, env, ctx) {
         if (!Number.isInteger(q.correct_index) || q.correct_index < 0 || q.correct_index >= options.length) {
           fail(400, `${label}: mark the correct option`);
         }
-        return { kind: 'mcq', text: str(q.text, `${label} text`, 5000), max, co, part, qlabel, rbtl, model: '', rubric: [], options, correct: q.correct_index };
+        return { kind: 'mcq', text: str(q.text, `${label} text`, 5000), max, co, part, qgroup, qlabel, rbtl, model: '', rubric: [], options, correct: q.correct_index };
       }
       if (type === 'MCQ Test') fail(400, `${label}: an MCQ Test can contain only MCQ questions`);
       if (!Array.isArray(q.rubric) || !q.rubric.length) fail(400, `${label}: add at least one rubric criterion`);
@@ -846,6 +899,7 @@ async function handle(request, env, ctx) {
         max,
         co,
         part,
+        qgroup,
         qlabel,
         rbtl,
         model: str(q.model_answer, `${label} model answer`, 8000),
@@ -855,6 +909,15 @@ async function handle(request, env, ctx) {
       };
     });
 
+    for (const p of paper.parts) {
+      const n = questions.filter((q) => q.part === p.name).length;
+      if (n !== p.questions * p.subparts) fail(400, `Part ${p.name}: expected ${p.questions * p.subparts} question boxes, got ${n}. Rebuild the question boxes.`);
+    }
+    // The highest score possible (counting only the questions a student attempts) must equal the paper's max marks.
+    const possible = countBest(paper.parts, questions.map((q) => ({ part: q.part, qgroup: q.qgroup, m: q.max })), 'm');
+    if (Math.abs(possible - paper.max_marks) > 1e-9) {
+      fail(400, `Marks do not add up: the questions a student attempts carry ${possible} marks, but the paper's max marks is ${paper.max_marks}`);
+    }
     if (type === 'Hybrid' && !(questions.some((q) => q.kind === 'mcq') && questions.some((q) => q.kind !== 'mcq'))) {
       fail(400, 'A Hybrid assessment needs at least one MCQ and one written question');
     }
@@ -870,10 +933,10 @@ async function handle(request, env, ctx) {
       ...sectionIds.map((sid) => env.DB.prepare('INSERT INTO assessment_sections (assessment_id, section_id) VALUES (?,?)').bind(id, sid)),
       ...questions.map((q, i) =>
         env.DB.prepare(
-          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index, part, label, rbtl)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index, part, label, rbtl, qgroup)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric), q.kind,
-          q.options ? JSON.stringify(q.options) : null, q.correct, q.part, q.qlabel, q.rbtl),
+          q.options ? JSON.stringify(q.options) : null, q.correct, q.part, q.qlabel, q.rbtl, q.qgroup),
       ),
     ]);
     return json({ id });
@@ -898,6 +961,18 @@ async function handle(request, env, ctx) {
     const secs = await env.DB.prepare(
       `SELECT s.name FROM assessment_sections x JOIN sections s ON s.id = x.section_id WHERE x.assessment_id = ? ORDER BY s.name`,
     ).bind(a.id).all();
+    const parts = paperOf(a).parts;
+    if (parts) {
+      const ans = await env.DB.prepare(
+        `SELECT an.attempt_id, an.llm_marks, an.final_marks, q.part, q.qgroup FROM answers an JOIN questions q ON q.id = an.question_id
+         JOIN attempts t ON t.id = an.attempt_id WHERE t.assessment_id = ?`,
+      ).bind(a.id).all();
+      for (const t of at.results) {
+        const mine = ans.results.filter((r) => r.attempt_id === t.id);
+        if (t.llm_total !== null) t.llm_total = countBest(parts, mine.map((r) => ({ ...r })), 'llm_marks');
+        if (t.final_total !== null) t.final_total = countBest(parts, mine.map((r) => ({ ...r })), 'final_marks');
+      }
+    }
     return json({
       ...a,
       can: { edit: a.faculty_id === user.id && !!user.perms.create, approve: !!user.perms.approve },
@@ -932,7 +1007,7 @@ async function handle(request, env, ctx) {
     // (access is checked by readAssessment)
     const a = await readAssessment(+m[1]);
     const [qs, rows] = await env.DB.batch([
-      env.DB.prepare('SELECT id, seq, co, max_marks FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id),
+      env.DB.prepare('SELECT id, seq, co, max_marks, part, qgroup, label FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id),
       env.DB.prepare(
         `SELECT u.roll_no, u.name, sec.name AS section, t.id AS attempt_id, an.question_id, an.final_marks
          FROM attempts t JOIN users u ON u.id = t.student_id LEFT JOIN sections sec ON sec.id = u.section_id
@@ -945,7 +1020,7 @@ async function handle(request, env, ctx) {
       if (!byAttempt.has(r.attempt_id)) byAttempt.set(r.attempt_id, { roll_no: r.roll_no, name: r.name, section: r.section, marks: {} });
       byAttempt.get(r.attempt_id).marks[r.question_id] = r.final_marks;
     }
-    return json({ questions: qs.results, students: [...byAttempt.values()] });
+    return json({ questions: qs.results, students: [...byAttempt.values()], parts: paperOf(a).parts || null, max_marks: paperOf(a).max_marks || null });
   }
 
   if ((m = route('POST', /^\/api\/assessments\/(\d+)\/publish$/))) {
@@ -963,13 +1038,18 @@ async function handle(request, env, ctx) {
     const t = await staffAttempt(+m[1]);
     const { results } = await env.DB.prepare(
       `SELECT a.id, a.text, a.eval_status, a.eval_error, a.llm_marks, a.llm_json, a.llm_confidence, a.final_marks, a.faculty_remark,
-              q.seq, q.part, q.label, q.text AS qtext, q.max_marks, q.co, q.model_answer, q.kind, q.options_json, q.correct_index
+              q.seq, q.part, q.label, q.qgroup, q.text AS qtext, q.max_marks, q.co, q.model_answer, q.kind, q.options_json, q.correct_index
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
       .bind(t.id)
       .all();
+    const pa = paperOf(await env.DB.prepare('SELECT paper_json FROM assessments WHERE id = ?').bind(t.assessment_id).first());
+    const total = countBest(pa.parts, results, t.status === 'published' ? 'final_marks' : 'llm_marks');
     return json({
       ...t,
+      total,
+      max: pa.max_marks || results.reduce((s, r) => s + r.max_marks, 0),
+      parts: pa.parts || null,
       can_approve: !!user.perms.approve,
       answers: results.map((r) => ({
         ...r,
@@ -1030,7 +1110,7 @@ async function handle(request, env, ctx) {
     student();
     ctx.waitUntil(closeOverdueAttempts(env).catch((e) => console.error(e)));
     const { results } = await env.DB.prepare(
-      `SELECT s.id, s.subject_name, s.subject_code, s.type, s.number, s.duration_min, s.start_at, s.end_at,
+      `SELECT s.id, s.subject_name, s.subject_code, s.type, s.number, s.duration_min, s.start_at, s.end_at, s.paper_json,
         (SELECT COALESCE(SUM(max_marks),0) FROM questions WHERE assessment_id = s.id) AS total_marks,
         (SELECT COUNT(*) FROM questions WHERE assessment_id = s.id) AS question_count,
         t.id AS attempt_id, t.status AS attempt_status
@@ -1042,7 +1122,7 @@ async function handle(request, env, ctx) {
     )
       .bind(user.id, user.section_id, inst)
       .all();
-    return json(results);
+    return json(results.map((r) => ({ ...r, total_marks: paperMax(r, r.total_marks), paper_json: undefined })));
   }
 
   // Start (or resume) an attempt. Model answers, rubrics and MCQ answer keys are never sent to the student here.
@@ -1055,7 +1135,7 @@ async function handle(request, env, ctx) {
     ).bind(+m[1], user.section_id, inst).first();
     if (!a) fail(404, 'Assessment not found');
     let t = await env.DB.prepare('SELECT * FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(a.id, user.id).first();
-    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json, part, label FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
+    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json, part, label, qgroup FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
     if (!t) {
       const t0 = Date.now();
       if (t0 < Date.parse(a.start_at)) fail(403, 'This assessment has not started yet');
@@ -1083,14 +1163,21 @@ async function handle(request, env, ctx) {
       h ^= h >>> 15; h = Math.imul(h, 2246822519) >>> 0; h ^= h >>> 13;
       return h >>> 0;
     };
-    if (a.shuffle) qs.results.sort((x, y) => rank(x.id, 0) - rank(y.id, 0));
+    if (a.shuffle) {
+      // Parts stay in order and sub-parts stay together; whole questions are shuffled within each part.
+      const first = new Map();
+      qs.results.forEach((q) => { if (!first.has(q.part)) first.set(q.part, q.seq); });
+      const key = (q) => [first.get(q.part), q.qgroup ? rank(q.qgroup, 0) : rank(q.id, 0), q.seq];
+      qs.results.sort((x, y) => { const p = key(x), r = key(y); return p[0] - r[0] || p[1] - r[1] || p[2] - r[2]; });
+    }
     const saved = await env.DB.prepare('SELECT question_id, text FROM answers WHERE attempt_id = ?').bind(t.id).all();
     const text = new Map(saved.results.map((r) => [r.question_id, r.text]));
     return json({
       attempt_id: t.id,
       deadline_at: t.deadline_at,
       server_now: now(),
-      assessment: { subject_name: a.subject_name, subject_code: a.subject_code, type: a.type, number: a.number, negative: a.negative },
+      assessment: { subject_name: a.subject_name, subject_code: a.subject_code, type: a.type, number: a.number, negative: a.negative,
+        parts: (paperOf(a).parts || []).filter((p) => p.attempt < p.questions).map((p) => ({ name: p.name, attempt: p.attempt, questions: p.questions })) },
       questions: qs.results.map((q) => ({
         id: q.id, seq: q.seq, text: q.text, max_marks: q.max_marks, kind: q.kind, part: q.part, label: q.label,
         options: q.options_json ? JSON.parse(q.options_json) : null,
@@ -1153,23 +1240,31 @@ async function handle(request, env, ctx) {
     student();
     const t = await ownAttemptAsStudent(+m[1]);
     if (t.status !== 'published') return json({ published: false, status: t.status });
-    const a = await env.DB.prepare('SELECT subject_name, subject_code, type, number FROM assessments WHERE id = ?').bind(t.assessment_id).first();
+    const a = await env.DB.prepare('SELECT subject_name, subject_code, type, number, paper_json FROM assessments WHERE id = ?').bind(t.assessment_id).first();
+    const pa = paperOf(a);
+    delete a.paper_json;
     const { results } = await env.DB.prepare(
-      `SELECT q.seq, q.part, q.label, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
+      `SELECT q.seq, q.part, q.label, q.qgroup, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
               a.text, a.final_marks, a.llm_marks, a.llm_json, a.faculty_remark
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
       .bind(t.id)
       .all();
+    const total = countBest(pa.parts, results, 'final_marks');
     return json({
       published: true,
       assessment: a,
+      total,
+      max: pa.max_marks || results.reduce((s, r) => s + r.max_marks, 0),
       answers: results.map((r) => {
         const llm = r.llm_json ? JSON.parse(r.llm_json) : null;
         // If the faculty changed the marks, the model's criterion-wise split no longer adds up, so it is not shown.
         const moderated = r.llm_marks === null || Math.abs(r.final_marks - r.llm_marks) > 1e-9;
         return {
           seq: r.seq,
+          part: r.part,
+          label: r.label,
+          counted: r.counted,
           kind: r.kind,
           question: r.qtext,
           answer: r.text,

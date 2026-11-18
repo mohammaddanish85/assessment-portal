@@ -272,6 +272,7 @@ async function viewAdmin() {
   const sectionOptions = `<option value="">Choose section…</option>${d.sections.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}`;
   let logo = inst.logo;
   let lhead = inst.letterhead || '';
+  const F = inst.format || {};
 
   app.innerHTML = `<h1>Institute setup</h1>
     <p class="muted">Institute code for logging in: <b>${esc(inst.code)}</b>. Fill these in order; each step feeds the next.</p>
@@ -283,6 +284,15 @@ async function viewAdmin() {
         <label>Letterhead (header image of your official letterhead: PNG or JPG, full page width, under 700 KB)<input type="file" id="lhfile" accept="image/png,image/jpeg"></label>
         <p class="muted small">Every question paper, answer key, answer sheet and report is printed under this letterhead. Without it, the logo and name above are used.</p>
         <div id="lhprev"></div>
+        <h3>Question paper format <span class="muted small">(how your institute's papers are laid out)</span></h3>
+        <div class="row"><label>Taxonomy column on exam papers<input name="tax_exam" value="${esc(F.tax_exam || 'RBTL')}"></label>
+          <label>Shown as<select name="tax_exam_style"><option value="code"${F.tax_exam_style !== 'name' ? ' selected' : ''}>Code, e.g. RBTL-2</option><option value="name"${F.tax_exam_style === 'name' ? ' selected' : ''}>Level name, e.g. Understand</option></select></label>
+          <label>Code prefix<input name="tax_code" value="${esc(F.tax_code || 'RBTL')}" placeholder="RBTL"></label></div>
+        <div class="row"><label>Taxonomy column on assignments<input name="tax_asg" value="${esc(F.tax_asg || 'R. Bloom Taxonomy Level')}"></label>
+          <label>Shown as<select name="tax_asg_style"><option value="name"${F.tax_asg_style !== 'code' ? ' selected' : ''}>Level name, e.g. Analyse</option><option value="code"${F.tax_asg_style === 'code' ? ' selected' : ''}>Code, e.g. RBTL-4</option></select></label></div>
+        <div class="row"><label>Signature lines on exam papers (separate with |)<input name="sign_exam" value="${esc(F.sign_exam ?? 'Faculty Name and Sign. | HOD Sign.')}"></label>
+          <label>Signature lines on assignments (separate with |)<input name="sign_asg" value="${esc(F.sign_asg || '')}" placeholder="Leave empty for none"></label></div>
+        <label class="choice" style="max-width:360px"><input type="checkbox" name="roll"${F.roll === false ? '' : ' checked'}> Print "Roll No. ……" on exam papers</label>
         <p><button>Save institute profile</button></p></form></div>
 
     <div class="card"><h2>2. Departments (${d.departments.length})</h2>
@@ -362,7 +372,12 @@ async function viewAdmin() {
     reader.readAsDataURL(file);
   };
   document.getElementById('finst').onsubmit = act(async (e) => {
-    await api('POST', '/admin/settings', { institute: e.target.institute.value, line: e.target.line.value, logo, letterhead: lhead });
+    const g = e.target;
+    await api('POST', '/admin/settings', {
+      institute: g.institute.value, line: g.line.value, logo, letterhead: lhead,
+      format: { tax_exam: g.tax_exam.value, tax_exam_style: g.tax_exam_style.value, tax_code: g.tax_code.value, tax_asg: g.tax_asg.value,
+        tax_asg_style: g.tax_asg_style.value, sign_exam: g.sign_exam.value, sign_asg: g.sign_asg.value, roll: g.roll.checked },
+    });
     user.institute_name = e.target.institute.value.trim();
     drawNav();
     toast('Institute profile saved');
@@ -458,6 +473,23 @@ async function viewAdmin() {
   })));
 }
 
+// Best-of counting for parts with a choice ("attempt any 2 of 3"); same rule as the server.
+function bestTotal(parts, rows, key) {
+  rows.forEach((r) => (r.counted = true));
+  for (const p of parts || []) {
+    const groups = new Map();
+    rows.filter((r) => (r.part || '') === p.name).forEach((r) => {
+      const g = groups.get(r.qgroup) || { s: 0, rows: [] };
+      g.s += Number(r[key] ?? 0); g.rows.push(r); groups.set(r.qgroup, g);
+    });
+    if (p.attempt >= groups.size) continue;
+    [...groups.values()].sort((x, y) => y.s - x.s).slice(p.attempt).forEach((g) => g.rows.forEach((r) => (r.counted = false)));
+  }
+  return Math.round(rows.reduce((s, r) => s + (r.counted ? Number(r[key] ?? 0) : 0), 0) * 100) / 100;
+}
+const paperInfo = (a) => { try { return JSON.parse(a.paper_json || '{}'); } catch { return {}; } };
+const paperMaxOf = (a) => paperInfo(a).max_marks || a.questions.reduce((s, q) => s + q.max_marks, 0);
+
 // Question label, with the part for a Mid Term paper (e.g. "Part A · Q2").
 const qno = (q) => `${q.part ? `Part ${esc(q.part)} · ` : ''}${q.label ? `Q ${esc(q.label)}` : `Q${q.seq}`}`;
 
@@ -522,15 +554,18 @@ async function viewNew(kind) {
     <div class="card"><h2>Paper header <span class="muted small">(printed on the question paper in your institute's format)</span></h2>
       ${isAsg ? `<div class="row"><label style="flex:2 1 260px">Semester line<input name="p_title" placeholder="Odd Semester 2026-27"></label><label>Session<input name="p_session" placeholder="2026-27"></label></div>
         <div class="row"><label style="flex:2 1 260px">Program<input name="p_programme" placeholder="B. Tech (CSE-CS)"></label><label>Course units included<input name="p_units" placeholder="1, 2"></label></div>`
-      : `<div class="row"><label style="flex:2 1 260px">Paper title<input name="p_title"></label><label>Max marks on paper<input name="p_max" type="number" min="1" placeholder="Total of questions"></label></div>
+      : `<label>Paper title<input name="p_title"></label>
         <label>Programme and semester<input name="p_programme" placeholder="B. Tech (CSE – Cyber Security) 5th Semester"></label>
-        <label>Instructions (one per line)<textarea name="p_instructions" rows="3" placeholder="Question No. 1 is compulsory.&#10;Answer any two questions from PART-B."></textarea></label>
-        <p class="muted small">Set "Max marks on paper" only when students answer a choice of questions (e.g. any two from PART-B).</p>`}
+        <label>Instructions (one per line)<textarea name="p_instructions" rows="3" placeholder="Question No. 1 is compulsory.&#10;Answer any two questions from PART-B."></textarea></label>`}
       <label>Course outcomes (one per line)<textarea name="p_cos" rows="3" placeholder="CO-1: Explain the fundamentals of …&#10;CO-2: Apply … techniques for …"></textarea></label>
       ${isAsg ? '<label>Introduction / theme (optional, shown above the questions; **text** prints bold)<textarea name="p_intro" rows="3"></textarea></label>' : ''}</div>
+    <div class="card"><h2>Paper structure</h2>
+      <div class="row"><label style="max-width:220px">Max marks of the paper<input name="p_max" type="number" min="1" step="0.5" required></label></div>
+      <table class="parts"><thead><tr><th>Part</th>${K.q === 'both' ? '<th>Type</th>' : ''}<th>Questions</th><th>Sub-parts in each</th><th>Sub-part numbering</th><th>Student attempts</th><th></th></tr></thead><tbody id="parts"></tbody></table>
+      <p><button type="button" class="ghost small" id="addpart">+ Add part</button> <button type="button" id="build">Create question boxes</button></p>
+      <p class="muted small">Example: PART-A with 1 question of 10 sub-parts (i to x), attempt 1; PART-B with 3 questions of 2 sub-parts ((a), (b)), attempt 2. When a part gives a choice, the student's best answers in that part are counted.</p></div>
     <div id="qs"></div>
-    <p>${K.q === 'both' ? '<button type="button" class="ghost" data-add="mcq">+ Add MCQ</button> <button type="button" class="ghost" data-add="descriptive">+ Add written question</button>'
-      : `<button type="button" class="ghost" data-add="${K.q}">+ Add question</button>`}</p>
+    <p class="muted" id="marksum"></p>
     <p><button>Save as draft</button></p></form>`;
   const f = document.getElementById('f');
   const qs = document.getElementById('qs');
@@ -543,6 +578,7 @@ async function viewNew(kind) {
     return d;
   };
   let optGroup = 0;
+  const ROMAN_FULL = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x', 'xi', 'xii', 'xiii', 'xiv', 'xv'];
   const optionRow = (group) => {
     const d = document.createElement('div');
     d.className = 'rubric-row';
@@ -550,20 +586,53 @@ async function viewNew(kind) {
     d.querySelector('button').onclick = () => d.parentNode.children.length > 2 && d.remove();
     return d;
   };
-  const addQuestion = (qk) => {
+  // ---- paper structure → question boxes ----
+  const partsBody = document.getElementById('parts');
+  const partRow = (p = {}) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><input data-p="name" maxlength="10" value="${esc(p.name ?? '')}" placeholder="${isAsg || K.q === 'mcq' ? '(none)' : 'A'}" style="width:70px"></td>
+      ${K.q === 'both' ? `<td><select data-p="kind"><option value="mcq"${p.kind === 'mcq' ? ' selected' : ''}>MCQ</option><option value="descriptive"${p.kind !== 'mcq' ? ' selected' : ''}>Written</option></select></td>` : ''}
+      <td><input data-p="questions" type="number" min="1" max="40" value="${p.questions ?? 1}" style="width:80px"></td>
+      <td><input data-p="subparts" type="number" min="1" max="15" value="${p.subparts ?? 1}" style="width:80px"></td>
+      <td><select data-p="style"><option value="alpha"${p.style !== 'roman' ? ' selected' : ''}>(a), (b), (c)</option><option value="roman"${p.style === 'roman' ? ' selected' : ''}>(i), (ii), (iii)</option></select></td>
+      <td><input data-p="attempt" type="number" min="1" max="40" value="${p.attempt ?? p.questions ?? 1}" style="width:80px"></td>
+      <td><button type="button" class="ghost small">✕</button></td>`;
+    tr.querySelector('button').onclick = () => partsBody.children.length > 1 && tr.remove();
+    const qn = tr.querySelector('[data-p=questions]'), at = tr.querySelector('[data-p=attempt]');
+    qn.oninput = () => { if (+at.value > +qn.value || at.dataset.auto !== 'no') at.value = qn.value; };
+    at.oninput = () => (at.dataset.auto = 'no');
+    partsBody.append(tr);
+  };
+  const readParts = () => [...partsBody.children].map((tr) => ({
+    name: tr.querySelector('[data-p=name]').value.trim(),
+    kind: K.q === 'both' ? tr.querySelector('[data-p=kind]').value : K.q,
+    questions: +tr.querySelector('[data-p=questions]').value || 1,
+    subparts: +tr.querySelector('[data-p=subparts]').value || 1,
+    style: tr.querySelector('[data-p=style]').value,
+    attempt: +tr.querySelector('[data-p=attempt]').value || 1,
+  }));
+  const DEFAULT_PARTS = {
+    'Mid Term': [{ name: 'A', questions: 1, subparts: 5, style: 'roman', attempt: 1 }, { name: 'B', questions: 4, subparts: 2, attempt: 3 }],
+    Sessional: [{ name: 'A', questions: 1, subparts: 5, style: 'roman', attempt: 1 }, { name: 'B', questions: 3, subparts: 2, attempt: 2 }],
+    Assignment: [{ name: '', questions: 4, subparts: 1, attempt: 4 }],
+    'MCQ Test': [{ name: '', questions: 10, subparts: 1, attempt: 10 }],
+    Hybrid: [{ name: 'A', kind: 'mcq', questions: 10, subparts: 1, attempt: 10 }, { name: 'B', kind: 'descriptive', questions: 3, subparts: 1, attempt: 2 }],
+  }[T];
+  DEFAULT_PARTS.forEach(partRow);
+  document.getElementById('addpart').onclick = () => partRow({ name: String.fromCharCode(65 + partsBody.children.length) });
+
+  const subLabel = (style, i) => (style === 'roman' ? ROMAN_FULL[i] : String.fromCharCode(97 + i));
+  const rbtOpts = RBT.map((n, i) => (i ? `<option value="${i}">${isAsg ? n : `${n} (${i})`}</option>` : '<option value="">Choose…</option>')).join('');
+  const makeBox = (qk) => {
     const box = document.createElement('div');
     box.className = 'card q';
     box.dataset.kind = qk;
     const group = `opt${++optGroup}`;
-    const lastPart = qs.lastElementChild?.querySelector('[data-q=part]')?.value ?? (isMid ? 'A' : '');
-    const rbtOpts = RBT.map((n, i) => (i ? `<option value="${i}">${isAsg ? n : `RBTL-${i} (${n})`}</option>` : '<option value="">Choose…</option>')).join('');
-    box.innerHTML = `<div class="between"><h2 class="qn"></h2><button type="button" class="ghost small rm">Remove</button></div>
+    box.innerHTML = `<h2 class="qn"></h2>
       <label>Question<textarea data-q="text" required></textarea></label>
-      <div class="row">${isAsg ? '' : `<label>Part${isMid ? '' : ' (optional)'}<input data-q="part" value="${esc(lastPart)}" maxlength="20" placeholder="A"${isMid ? ' required' : ''}></label>`}
-        <label>Q. No. on paper<input data-q="label" maxlength="12" placeholder="${isAsg ? 'Q1' : 'i. or 2.(a)'}"></label>
-        <label>Max marks<input type="number" step="0.5" min="0.5" data-q="max_marks" required></label></div>
-      <div class="row"><label>CO${isMid ? '' : ' (optional)'}<input data-q="co" placeholder="CO-1"${isMid ? ' required' : ''}></label>
-        <label>${isAsg ? 'R. Bloom Taxonomy Level' : 'RBTL'}<select data-q="rbtl">${rbtOpts}</select></label></div>
+      <div class="row"><label>Max marks<input type="number" step="0.5" min="0.5" data-q="max_marks" required></label>
+        <label>CO${isMid ? '' : ' (optional)'}<input data-q="co" placeholder="CO-1"${isMid ? ' required' : ''}></label>
+        <label>Bloom's taxonomy level<select data-q="rbtl">${rbtOpts}</select></label></div>
       ${qk === 'mcq' ? `<h3>Options <span class="muted small">(select the radio button of the correct option)</span></h3>
         <div class="opt"></div><button type="button" class="ghost small addo">+ Add option</button>`
       : `<label>Model answer / key points (never shown to students)<textarea data-q="model_answer" required></textarea></label>
@@ -577,13 +646,48 @@ async function viewNew(kind) {
       box.querySelector('.rub').append(rubricRow());
       box.querySelector('.addr').onclick = () => box.querySelector('.rub').append(rubricRow());
     }
-    box.querySelector('.rm').onclick = () => { if (qs.children.length > 1) { box.remove(); renumber(); } };
-    qs.append(box);
-    renumber();
+    box.querySelector('[data-q=max_marks]').oninput = sumMarks;
+    return box;
   };
-  const renumber = () => [...qs.children].forEach((b, i) => (b.querySelector('.qn').textContent = `Question ${i + 1}${K.q === 'both' ? (b.dataset.kind === 'mcq' ? ' · MCQ' : ' · Written') : ''}`));
-  f.querySelectorAll('[data-add]').forEach((x) => (x.onclick = () => addQuestion(x.dataset.add)));
-  if (K.q === 'both') { addQuestion('mcq'); addQuestion('descriptive'); } else addQuestion(K.q);
+  // Builds one box per question (or sub-part), numbered across the paper. Boxes already filled in are kept.
+  let builtParts = [];
+  const build = () => {
+    const parts = readParts();
+    if (parts.length > 1 && parts.some((p) => !p.name)) return toast('Give every part a name (e.g. A, B)', true);
+    if (new Set(parts.map((p) => p.name)).size !== parts.length) return toast('Two parts have the same name', true);
+    const old = new Map([...qs.querySelectorAll('.card.q')].map((b) => [`${b.dataset.kind}|${b.dataset.part}|${b.dataset.label}`, b]));
+    qs.innerHTML = '';
+    let n = 0;
+    parts.forEach((p) => {
+      const head = document.createElement('h2');
+      head.className = 'parthead';
+      head.textContent = `${p.name ? `PART-${p.name}` : 'Questions'} · ${p.attempt < p.questions ? `student attempts any ${p.attempt} of ${p.questions}` : 'all compulsory'}`;
+      qs.append(head);
+      for (let qi = 0; qi < p.questions; qi++) {
+        n += 1;
+        for (let si = 0; si < p.subparts; si++) {
+          const label = isAsg ? (p.subparts > 1 ? `Q${n} (${subLabel(p.style, si)})` : `Q${n}`) : p.subparts > 1 ? `${n}. (${subLabel(p.style, si)})` : `${n}.`;
+          const box = old.get(`${p.kind}|${p.name}|${label}`) || makeBox(p.kind);
+          Object.assign(box.dataset, { part: p.name, label, qgroup: n });
+          box.querySelector('.qn').textContent = `${p.name ? `PART-${p.name} · ` : ''}Q.N. ${label}${K.q === 'both' ? (p.kind === 'mcq' ? ' · MCQ' : ' · Written') : ''}`;
+          qs.append(box);
+        }
+      }
+    });
+    builtParts = parts;
+    sumMarks();
+  };
+  const sumMarks = () => {
+    const rows = [...qs.querySelectorAll('.card.q')].map((b) => ({ part: b.dataset.part, qgroup: +b.dataset.qgroup, m: +b.querySelector('[data-q=max_marks]').value || 0 }));
+    const possible = bestTotal(builtParts, rows, 'm');
+    const max = +f.p_max.value || 0;
+    document.getElementById('marksum').innerHTML = rows.length
+      ? `Marks a student can score (counting only the questions attempted): <b>${num(possible)}</b>${max ? ` · Max marks of the paper: <b>${num(max)}</b> ${Math.abs(possible - max) < 1e-9 ? '<span class="pill ok">Matches</span>' : '<span class="pill warn">Does not match yet</span>'}` : ''}`
+      : '';
+  };
+  document.getElementById('build').onclick = () => build();
+  f.p_max.oninput = sumMarks;
+  build();
 
   // Paper header: suggested title, and the last header used for this subject is filled back in.
   const MONTH = new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' });
@@ -609,17 +713,20 @@ async function viewNew(kind) {
   f.onsubmit = act(async () => {
     const paper = {
       title: f.p_title.value, programme: f.p_programme.value, session: f.p_session?.value || '', units: f.p_units?.value || '',
-      instructions: f.p_instructions?.value || '', cos: f.p_cos.value, intro: f.p_intro?.value || '', max_marks: f.p_max ? +f.p_max.value || null : null,
+      instructions: f.p_instructions?.value || '', cos: f.p_cos.value, intro: f.p_intro?.value || '', max_marks: +f.p_max.value || null,
+      parts: readParts(),
     };
+    if (JSON.stringify(paper.parts) !== JSON.stringify(builtParts)) throw new Error('The paper structure changed. Press "Create question boxes" first.');
     try { localStorage.setItem(`cx-paper-${T}-${f.subject_id.value}`, JSON.stringify(Object.fromEntries(PF.map((k) => [k, f[k].value])))); } catch {}
-    const questions = [...qs.children].map((b) => {
+    const questions = [...qs.querySelectorAll('.card.q')].map((b) => {
       const base = {
         kind: b.dataset.kind,
+        qgroup: +b.dataset.qgroup,
         text: b.querySelector('[data-q=text]').value,
         max_marks: +b.querySelector('[data-q=max_marks]').value,
         co: b.querySelector('[data-q=co]').value,
-        part: b.querySelector('[data-q=part]')?.value || '',
-        label: b.querySelector('[data-q=label]').value,
+        part: b.dataset.part,
+        label: b.dataset.label,
         rbtl: +b.querySelector('[data-q=rbtl]').value || null,
       };
       if (base.kind === 'mcq') {
@@ -663,7 +770,7 @@ async function viewAssessment(id) {
   const seq = nav_seq;
   const a = await api('GET', `/assessments/${id}`);
   if (seq !== nav_seq) return;
-  const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
+  const total = paperMaxOf(a);
   const sheet = await api('GET', `/assessments/${id}/marks`);
   if (seq !== nav_seq) return;
   app.innerHTML = `<div class="between"><h1>${title(a)}</h1>
@@ -710,14 +817,14 @@ async function viewAssessment(id) {
 function analyse(sheet) {
   const n = sheet.students.length;
   const qs = sheet.questions;
-  const maxTotal = qs.reduce((s, q) => s + q.max_marks, 0);
-  const totals = sheet.students.map((st) => qs.reduce((s, q) => s + (st.marks[q.id] ?? 0), 0));
+  const maxTotal = sheet.max_marks || qs.reduce((s, q) => s + q.max_marks, 0);
+  const totals = sheet.students.map((st) => bestTotal(sheet.parts, qs.map((q) => ({ part: q.part, qgroup: q.qgroup, m: st.marks[q.id] ?? 0 })), 'm'));
   const avg = (arr) => arr.reduce((s, x) => s + x, 0) / arr.length;
   const pct = (x) => `${Math.round(x * 100)}%`;
   const cos = [...new Set(qs.map((q) => q.co).filter(Boolean))].sort();
   const qRows = () => qs.map((q) => {
     const m = avg(sheet.students.map((st) => st.marks[q.id] ?? 0));
-    return `<tr><td>Q${q.seq}</td><td>${esc(q.co || '–')}</td><td>${num(q.max_marks)}</td><td>${num(m)}</td><td>${pct(m / q.max_marks)}</td></tr>`;
+    return `<tr><td>${esc(q.label || `Q${q.seq}`)}</td><td>${esc(q.co || '–')}</td><td>${num(q.max_marks)}</td><td>${num(m)}</td><td>${pct(m / q.max_marks)}</td></tr>`;
   }).join('');
   const coRows = (target) => cos.map((co) => {
     const mine = qs.filter((q) => q.co === co);
@@ -835,9 +942,17 @@ const coLine = (l) => { const i = l.indexOf(':'); return i > 0 && i < 12 ? `<b>$
 const dmy = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, '0')}-${String(x.getMonth() + 1).padStart(2, '0')}-${x.getFullYear()}`; };
 
 function paperDoc(a, inst, key) {
-  const P = (() => { try { return JSON.parse(a.paper_json || '{}'); } catch { return {}; } })();
-  const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
-  const max = P.max_marks || total;
+  const P = paperInfo(a);
+  const max = paperMaxOf(a);
+  const F = inst.format || {};
+  const asgF = a.type === 'Assignment';
+  const taxHead = asgF ? F.tax_asg || 'R. Bloom Taxonomy Level' : F.tax_exam || 'RBTL';
+  const taxStyle = asgF ? F.tax_asg_style || 'name' : F.tax_exam_style || 'code';
+  const tax = (n) => (!n ? '' : taxStyle === 'name' ? RBT[n] : `${F.tax_code || 'RBTL'}-${n}`);
+  const signs = (asgF ? F.sign_asg || '' : F.sign_exam ?? 'Faculty Name and Sign. | HOD Sign.').split('|').map((x) => x.trim()).filter(Boolean);
+  const signHtml = signs.length ? `<div class="signs">${signs.map((x) => `<b>${esc(x)}</b>`).join('')}</div>` : '';
+  const partOf = (name) => (P.parts || []).find((p) => p.name === name);
+  const choiceLine = (name) => { const p = partOf(name); return p && p.attempt < p.questions ? `<p class="choice-note">Attempt any ${p.attempt} of the ${p.questions} questions.</p>` : ''; };
   const cos = lines(P.cos);
   const keyRows = (q, span) => !key ? '' : `<tr class="keyrow"><td></td><td colspan="${span}">${q.kind === 'mcq'
     ? `<b>Answer:</b> (${String.fromCharCode(97 + q.correct_index)}) ${esc(q.options[q.correct_index])}`
@@ -856,9 +971,9 @@ function paperDoc(a, inst, key) {
       <hr class="dash">
       ${cos.length ? `<p><b><u>Course Outcomes:</u></b></p>${cos.map((l) => `<p>${coLine(l)}</p>`).join('')}` : ''}
       ${P.intro ? `<div class="pre intro">${rich(P.intro)}</div>` : ''}
-      <table class="ptable"><thead><tr><th style="width:9%">S. No.</th><th>Questions</th><th style="width:11%">Course Outcome</th><th style="width:13%">R. Bloom Taxonomy Level</th><th style="width:8%">Marks</th></tr></thead>
-      <tbody>${a.questions.map((q) => `<tr><td class="c">${esc(q.label || `Q${q.seq}`)}</td><td>${qtext(q)}</td><td class="c">${esc(q.co)}</td><td class="c">${q.rbtl ? RBT[q.rbtl] : ''}</td><td class="c">${num(q.max_marks)}</td></tr>${keyRows(q, 4)}`).join('')}</tbody></table>
-    </section>`;
+      <table class="ptable"><thead><tr><th style="width:9%">S. No.</th><th>Questions</th><th style="width:11%">Course Outcome</th><th style="width:13%">${esc(taxHead)}</th><th style="width:8%">Marks</th></tr></thead>
+      <tbody>${a.questions.map((q) => `<tr><td class="c">${esc(q.label || `Q${q.seq}`)}</td><td>${qtext(q)}</td><td class="c">${esc(q.co)}</td><td class="c">${tax(q.rbtl)}</td><td class="c">${num(q.max_marks)}</td></tr>${keyRows(q, 4)}`).join('')}</tbody></table>
+      ${signHtml}</section>`;
   }
 
   const instr = lines(P.instructions);
@@ -867,15 +982,15 @@ function paperDoc(a, inst, key) {
   const groups = [];
   a.questions.forEach((q) => { const g = groups[groups.length - 1]; if (g && g.part === (q.part || '')) g.qs.push(q); else groups.push({ part: q.part || '', qs: [q] }); });
   return `<section class="doc pdoc exam">${letterhead(inst)}${keyNote}
-    <div class="roll">Roll No. …………………</div>
+    ${F.roll === false ? '' : '<div class="roll">Roll No. …………………</div>'}
     <div class="ehead"><b>${esc(P.title || `${a.type} ${a.number}`)}</b>${P.programme ? `<br><b>${esc(P.programme)}</b>` : ''}<br><b>Subject: ${esc(a.subject_name)} (${esc(a.subject_code)})</b></div>
     <div class="between"><b>Time: ${a.duration_min} Minutes</b><b>[Max Marks: ${num(max)}]</b></div>
     ${instr.length ? `<p class="ins"><b>Instructions:</b></p>${instr.map((l, i) => `<p class="ins">${/^\d+[.)]/.test(l) ? esc(l) : `${i + 1}. ${esc(l)}`}</p>`).join('')}` : ''}
     ${cos.length ? `<div class="cos">${cos.map((l) => `<p>${coLine(l)}</p>`).join('')}</div>` : ''}
-    ${groups.map((g) => `${g.part ? `<h2 class="partname">PART-${esc(g.part)}</h2>` : ''}
-      <table class="ptable"><thead><tr><th style="width:9%">Q.N.</th><th>Question</th><th style="width:8%">CO</th><th style="width:9%">RBTL</th><th style="width:7%">Marks</th></tr></thead>
-      <tbody>${g.qs.map((q, i) => `<tr><td class="c">${esc(q.label || `${q.seq}.`)}</td><td>${qtext(q)}</td><td class="c">${esc(q.co)}</td><td class="c">${q.rbtl ? `RBTL-${q.rbtl}` : ''}</td><td class="c">${num(q.max_marks)}</td></tr>${keyRows(q, 4)}`).join('')}</tbody></table>`).join('')}
-    <div class="signs"><b>Faculty Name and Sign.</b><b>HOD Sign.</b></div>
+    ${groups.map((g) => `${g.part ? `<h2 class="partname">PART-${esc(g.part)}</h2>` : ''}${choiceLine(g.part)}
+      <table class="ptable"><thead><tr><th style="width:9%">Q.N.</th><th>Question</th><th style="width:8%">CO</th><th style="width:11%">${esc(taxHead)}</th><th style="width:7%">Marks</th></tr></thead>
+      <tbody>${g.qs.map((q, i) => `<tr><td class="c">${esc(q.label || `${q.seq}.`)}</td><td>${qtext(q)}</td><td class="c">${esc(q.co)}</td><td class="c">${tax(q.rbtl)}</td><td class="c">${num(q.max_marks)}</td></tr>${keyRows(q, 4)}`).join('')}</tbody></table>`).join('')}
+    ${signHtml}
   </section>`;
 }
 
@@ -885,8 +1000,8 @@ function paperDoc(a, inst, key) {
 
 function answerSheet(t, head = '') {
   const final = t.status === 'published';
-  const got = t.answers.reduce((s, a) => s + ((final ? a.final_marks : a.llm_marks) ?? 0), 0);
-  const max = t.answers.reduce((s, a) => s + a.max_marks, 0);
+  const got = t.total ?? t.answers.reduce((s, a) => s + ((final ? a.final_marks : a.llm_marks) ?? 0), 0);
+  const max = t.max ?? t.answers.reduce((s, a) => s + a.max_marks, 0);
   return `<section class="doc">${head}<h1>Evaluated Answer Sheet</h1>
     <table class="meta"><tbody><tr><th>Assessment</th><td>${title(t)}</td><th>Student</th><td>${esc(t.student_name)}</td></tr>
       <tr><th>Submitted</th><td>${t.submitted_at ? fmt(t.submitted_at) : '–'}</td><th>Roll no</th><td>${esc(t.roll_no)}</td></tr>
@@ -894,7 +1009,7 @@ function answerSheet(t, head = '') {
     ${t.answers.map((a) => {
       const marks = final ? a.final_marks : a.llm_marks;
       const moderated = final && a.llm_marks !== null && Math.abs(a.final_marks - a.llm_marks) > 1e-9;
-      return `<div class="qblock"><div class="between"><h3>${qno(a)}${a.co ? ` (${esc(a.co)})` : ''}. ${esc(a.qtext)}</h3><b class="nowrap">${num(marks)} / ${num(a.max_marks)}</b></div>
+      return `<div class="qblock"><div class="between"><h3>${qno(a)}${a.co ? ` (${esc(a.co)})` : ''}. ${esc(a.qtext)}</h3><b class="nowrap">${num(marks)} / ${num(a.max_marks)}${a.counted === false ? ' <span class="pill">not counted</span>' : ''}</b></div>
         ${a.kind === 'mcq' ? optionList(a.options, a.text, a.correct_index) : `<div class="answer">${a.text.trim() ? esc(a.text) : 'Not attempted'}</div>`}
         ${a.kind !== 'mcq' && a.llm ? `<table><thead><tr><th>Rubric criterion</th><th>${moderated ? 'Draft marks' : 'Marks'}</th><th>Justification</th></tr></thead><tbody>${a.llm.criteria.map((c) => `<tr><td>${esc(c.criterion)}</td><td class="nowrap">${num(c.awarded)} / ${num(c.max)}</td><td>${why(c)}</td></tr>`).join('')}</tbody></table>
           ${moderated ? `<p class="small">Draft total ${num(a.llm_marks)} was moderated by the faculty to ${num(a.final_marks)}.</p>` : ''}
@@ -921,7 +1036,7 @@ async function viewPrint(kind, id) {
     html = answerSheet(t, head);
   } else {
     const a = await api('GET', `/assessments/${id}`);
-    const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
+    const total = paperMaxOf(a);
     if (kind === 'paper' || kind === 'key') {
       html = paperDoc(a, await api('GET', '/settings'), kind === 'key');
     } else if (kind === 'sheets') {
@@ -991,6 +1106,7 @@ async function viewAttempt(assessmentId) {
   app.innerHTML = `<div class="attempt-bar between"><b>${title(d.assessment)}</b>
       <span><span class="muted small" id="saved"></span> &nbsp; Time left: <span class="timer" id="timer"></span></span></div>
     <div class="note">${d.questions.some((q) => q.kind !== 'mcq') ? 'Type your answers yourself. Pasting is disabled, and leaving' : 'Leaving'} this tab is recorded for your faculty. Answers are saved automatically.</div>
+    ${(d.assessment.parts || []).map((p) => `<div class="note">${p.name ? `PART-${esc(p.name)}: ` : ''}attempt any ${p.attempt} of the ${p.questions} questions. If you answer more, your best ${p.attempt} are counted.</div>`).join('')}
     <form id="f">${d.questions.map((q) => `<div class="card"><div class="between"><h2>${qno(q)}</h2><span class="pill">${num(q.max_marks)} marks</span></div>
       <div class="answer">${esc(q.text)}</div>
       ${q.kind === 'mcq' ? `<div class="mcq" data-q="${q.id}">${(q.order || q.options.map((_, i) => i)).map((i, pos) => `<label class="choice"><input type="radio" name="q${q.id}" value="${i}"${/^\d+$/.test(q.answer) && +q.answer === i ? ' checked' : ''}> ${String.fromCharCode(65 + pos)}. ${esc(q.options[i])}</label>`).join('')}
@@ -1083,12 +1199,12 @@ async function viewResult(id) {
     app.innerHTML = '<div class="card"><h1>Result awaited</h1><p class="muted">Your answers are submitted. The result will appear here once your faculty approves it.</p><a class="btn" href="#/">Back</a></div>';
     return;
   }
-  const got = r.answers.reduce((s, a) => s + a.marks, 0);
-  const max = r.answers.reduce((s, a) => s + a.max_marks, 0);
+  const got = r.total ?? r.answers.reduce((s, a) => s + a.marks, 0);
+  const max = r.max ?? r.answers.reduce((s, a) => s + a.max_marks, 0);
   app.innerHTML = `<p class="between no-print"><a href="#/">← My assessments</a><button class="ghost" onclick="window.print()">Print / Save as PDF</button></p>
     <div class="print-only">${head}</div><h1>${title(r.assessment)}</h1><p class="print-only">${esc(user.name)}${user.roll_no ? ` · Roll no ${esc(user.roll_no)}` : ''}</p>
     <div class="card"><div class="muted">Total marks</div><div class="score">${num(got)} / ${num(max)}</div></div>
-    ${r.answers.map((a) => `<div class="card"><div class="between"><h2>${qno(a)}</h2><span class="pill ${a.marks >= a.max_marks * 0.6 ? 'ok' : 'warn'}">${num(a.marks)} / ${num(a.max_marks)}</span></div>
+    ${r.answers.map((a) => `<div class="card"><div class="between"><h2>${qno(a)}${a.counted === false ? ' <span class="pill">not counted</span>' : ''}</h2><span class="pill ${a.marks >= a.max_marks * 0.6 ? 'ok' : 'warn'}">${num(a.marks)} / ${num(a.max_marks)}</span></div>
       <div class="answer">${esc(a.question)}</div>
       <h3>Your answer</h3>${a.kind === 'mcq' ? optionList(a.options, a.answer, a.correct_index)
         : `<div class="answer">${a.answer.trim() ? esc(a.answer) : '<span class="muted">Not attempted</span>'}</div>`}

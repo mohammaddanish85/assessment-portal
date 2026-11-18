@@ -145,3 +145,8 @@ dialog.ask label { margin-bottom: 12px; }
 .pdoc hr.dash { border: 0; border-top: 1px dashed #000; margin: 8px 0; }
 .pdoc .intro { margin: 10px 0; }
 @media print { .pdoc .keyrow td { background: none; } .pdoc .ptable tr { break-inside: avoid; } }
+
+.pdoc .choice-note { text-align: center; font-style: italic; margin: -2px 0 4px; }
+table.parts input, table.parts select { margin: 0; }
+.parthead { margin: 22px 0 8px; font-size: 18px; color: var(--brand); }
+.pdoc .ptable th { text-transform: none; letter-spacing: 0; color: #000; font-size: inherit; background: none; }
