@@ -1,5 +1,5 @@
 import { ROLE_DEFAULTS, prepareDatabase } from './schema.js';
-import { evaluateAnswer } from './evaluator.js';
+import { evaluateAnswer, suggestRubric } from './evaluator.js';
 
 // Types a faculty member can create. 'Tutorial' exists only in older data.
 const TYPES = ['Mid Term', 'Sessional', 'Assignment', 'MCQ Test', 'Hybrid'];
@@ -1338,15 +1338,44 @@ async function handle(request, env, ctx) {
 
   // ----- master data for the assessment form -----
 
+  // The subjects and sections this faculty member is allotted, with the subject's COs (scheme) and the section's programme.
+  // An institute that has not set up allotment yet sees every subject and section, as before.
   if (route('GET', /^\/api\/master$/)) {
     can('create');
-    const [subjects, sections] = await env.DB.batch([
-      env.DB.prepare('SELECT id, name, code, semester FROM subjects WHERE institute_id = ? ORDER BY semester, code').bind(inst),
-      env.DB.prepare(
-        `SELECT s.id, s.name, (SELECT COUNT(*) FROM users WHERE section_id = s.id) AS students FROM sections s WHERE s.institute_id = ? ORDER BY s.name`,
-      ).bind(inst),
-    ]);
-    return json({ subjects: subjects.results, sections: sections.results });
+    const any = await env.DB.prepare('SELECT COUNT(*) AS n FROM allotments WHERE institute_id = ?').bind(inst).first();
+    const st = await settingsRow();
+    if (!any.n) {
+      const [subjects, sections] = await env.DB.batch([
+        env.DB.prepare('SELECT id, name, code, semester, cos_json FROM subjects WHERE institute_id = ? ORDER BY semester, code').bind(inst),
+        env.DB.prepare(`SELECT s.id, s.name, s.programme, s.semester, (SELECT COUNT(*) FROM users WHERE section_id = s.id AND role = 'student') AS students
+          FROM sections s WHERE s.institute_id = ? ORDER BY s.name`).bind(inst),
+      ]);
+      return json({ allotment: false, session: st.session, subjects: subjects.results.map((x) => ({ ...x, cos: JSON.parse(x.cos_json || '[]'), cos_json: undefined, sections: sections.results })) });
+    }
+    const { results } = await env.DB.prepare(`SELECT sb.id, sb.name, sb.code, sb.semester, sb.cos_json, p.name AS programme,
+        sc.id AS section_id, sc.name AS section, sc.semester AS section_semester,
+        (SELECT COUNT(*) FROM users WHERE section_id = sc.id AND role = 'student' AND status = 'active') AS students
+      FROM allotments a JOIN subjects sb ON sb.id = a.subject_id JOIN sections sc ON sc.id = a.section_id LEFT JOIN programmes p ON p.id = sb.programme_id
+      WHERE a.faculty_id = ? AND a.institute_id = ? ORDER BY sb.code, sc.name`).bind(user.id, inst).all();
+    const subjects = new Map();
+    for (const r of results) {
+      if (!subjects.has(r.id)) subjects.set(r.id, { id: r.id, name: r.name, code: r.code, semester: r.semester, programme: r.programme, cos: JSON.parse(r.cos_json || '[]'), sections: [] });
+      subjects.get(r.id).sections.push({ id: r.section_id, name: r.section, students: r.students });
+    }
+    return json({ allotment: true, session: st.session, subjects: [...subjects.values()] });
+  }
+
+  // "AI recommends": a draft rubric from the question and model answer; the faculty edits it.
+  if (route('POST', /^\/api\/ai\/rubric$/)) {
+    can('create');
+    const b = await body(request);
+    const max = Number(b.max_marks);
+    if (!(max > 0 && max <= 100)) fail(400, 'Enter the max marks first');
+    try {
+      return json({ rubric: await suggestRubric(env, { question: str(b.question, 'Question', 5000), modelAnswer: typeof b.model_answer === 'string' ? b.model_answer.slice(0, 8000) : '', maxMarks: max }) });
+    } catch (e) {
+      fail(503, 'The AI could not suggest a rubric right now. Write it yourself or try again.');
+    }
   }
 
   // ----- faculty: assessments -----
@@ -1366,9 +1395,8 @@ async function handle(request, env, ctx) {
     return json(results.map((a) => ({ ...a, total_marks: paperMax(a, a.total_marks), paper_json: undefined, mine: a.faculty_id === user.id })));
   }
 
-  if (route('POST', /^\/api\/assessments$/)) {
-    can('create');
-    const b = await body(request);
+  // Creating and editing a paper go through the same checks.
+  const readPaper = async (b) => {
     const type = TYPES.includes(b.type) ? b.type : fail(400, 'Choose an assessment type');
     const number = Number.isInteger(b.number) && b.number > 0 ? b.number : fail(400, 'Invalid assessment number');
     const start = new Date(b.start_at);
@@ -1410,12 +1438,20 @@ async function handle(request, env, ctx) {
       };
     });
     if (new Set(paper.parts.map((p) => p.name)).size !== paper.parts.length) fail(400, 'Two parts have the same name');
-    const subject = await env.DB.prepare('SELECT name, code FROM subjects WHERE id = ? AND institute_id = ?').bind(b.subject_id ?? 0, inst).first();
+    const subject = await env.DB.prepare('SELECT id, name, code, cos_json FROM subjects WHERE id = ? AND institute_id = ?').bind(b.subject_id ?? 0, inst).first();
     if (!subject) fail(400, 'Choose a subject');
+    const subjectCos = JSON.parse(subject.cos_json || '[]').map((c) => c.co);
     const sectionIds = [...new Set(Array.isArray(b.section_ids) ? b.section_ids.filter(Number.isInteger) : [])];
     if (!sectionIds.length) fail(400, 'Choose at least one section');
     const known = await env.DB.prepare(`SELECT COUNT(*) AS n FROM sections WHERE institute_id = ? AND id IN (${sectionIds.map(() => '?').join(',')})`).bind(inst, ...sectionIds).first();
     if (known.n !== sectionIds.length) fail(400, 'Unknown section');
+    // With allotment in use, a faculty member sets papers only for the subject and sections allotted to them.
+    const anyAllot = await env.DB.prepare('SELECT COUNT(*) AS n FROM allotments WHERE institute_id = ?').bind(inst).first();
+    if (anyAllot.n) {
+      const mine = await env.DB.prepare(`SELECT COUNT(*) AS n FROM allotments WHERE faculty_id = ? AND subject_id = ? AND section_id IN (${sectionIds.map(() => '?').join(',')})`)
+        .bind(user.id, subject.id, ...sectionIds).first();
+      if (mine.n !== sectionIds.length) fail(403, 'You can set papers only for the subject and sections allotted to you');
+    }
     if (!Array.isArray(b.questions) || !b.questions.length) fail(400, 'Add at least one question');
     if (b.questions.length > 80) fail(400, 'At most 80 questions');
 
@@ -1425,6 +1461,7 @@ async function handle(request, env, ctx) {
       if (!(max > 0 && max <= 100)) fail(400, `${label}: invalid max marks`);
       const co = typeof q.co === 'string' ? q.co.trim().slice(0, 20) : '';
       if (type === 'Mid Term' && !co) fail(400, `${label}: give the CO (required for a Mid Term paper)`);
+      if (co && subjectCos.length && !subjectCos.includes(co)) fail(400, `${label}: ${co} is not a CO of ${subject.code} in the scheme`);
       const part = typeof q.part === 'string' ? q.part.trim().slice(0, 10) : '';
       const pdef = paper.parts.find((p) => p.name === part) || fail(400, `${label}: unknown part`);
       const qgroup = Number.isInteger(q.qgroup) && q.qgroup >= 1 ? q.qgroup : fail(400, `${label}: missing question number`);
@@ -1477,25 +1514,53 @@ async function handle(request, env, ctx) {
     if (type === 'Hybrid' && !(questions.some((q) => q.kind === 'mcq') && questions.some((q) => q.kind !== 'mcq'))) {
       fail(400, 'A Hybrid assessment needs at least one MCQ and one written question');
     }
+    return { type, number, duration, start, end, release, subject, sectionIds, negative, paper, questions,
+      shuffle: b.shuffle ? 1 : 0, optionShuffle: mcqAllowed && b.option_shuffle ? 1 : 0 };
+  };
+  const writePaper = (id, P) => env.DB.batch([
+    env.DB.prepare('DELETE FROM assessment_sections WHERE assessment_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM questions WHERE assessment_id = ?').bind(id),
+    ...P.sectionIds.map((sid) => env.DB.prepare('INSERT INTO assessment_sections (assessment_id, section_id) VALUES (?,?)').bind(id, sid)),
+    ...P.questions.map((q, i) =>
+      env.DB.prepare(
+        `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index, part, label, rbtl, qgroup)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric), q.kind,
+        q.options ? JSON.stringify(q.options) : null, q.correct, q.part, q.qlabel, q.rbtl, q.qgroup),
+    ),
+  ]);
+
+  if (route('POST', /^\/api\/assessments$/)) {
+    can('create');
+    const P = await readPaper(await body(request));
     const ins = await env.DB.prepare(
-      `INSERT INTO assessments (institute_id, department_id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at, shuffle, negative, option_shuffle, paper_json)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO assessments (institute_id, department_id, faculty_id, subject_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at, shuffle, negative, option_shuffle, paper_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
-      .bind(inst, user.department_id ?? null, user.id, subject.name, subject.code, type, number, duration,
-        start.toISOString(), end.toISOString(), release, now(), b.shuffle ? 1 : 0, negative, mcqAllowed && b.option_shuffle ? 1 : 0, JSON.stringify(paper))
+      .bind(inst, user.department_id ?? null, user.id, P.subject.id, P.subject.name, P.subject.code, P.type, P.number, P.duration,
+        P.start.toISOString(), P.end.toISOString(), P.release, now(), P.shuffle, P.negative, P.optionShuffle, JSON.stringify(P.paper))
       .run();
     const id = ins.meta.last_row_id;
-    await env.DB.batch([
-      ...sectionIds.map((sid) => env.DB.prepare('INSERT INTO assessment_sections (assessment_id, section_id) VALUES (?,?)').bind(id, sid)),
-      ...questions.map((q, i) =>
-        env.DB.prepare(
-          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index, part, label, rbtl, qgroup)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric), q.kind,
-          q.options ? JSON.stringify(q.options) : null, q.correct, q.part, q.qlabel, q.rbtl, q.qgroup),
-      ),
-    ]);
+    await writePaper(id, P);
     return json({ id });
+  }
+
+  // Editing: only the author, only before any student starts, and not while DQAC review is in progress.
+  if ((m = route('PUT', /^\/api\/assessments\/(\d+)$/))) {
+    const a = await ownAssessment(+m[1]);
+    const started = await env.DB.prepare('SELECT COUNT(*) AS n FROM attempts WHERE assessment_id = ?').bind(a.id).first();
+    if (started.n) fail(409, 'Students have started this assessment, so it can no longer be edited.');
+    if (!['draft', 'changes'].includes(a.stage || 'draft') || (a.status === 'published' && a.stage !== 'draft')) {
+      fail(409, a.stage === 'review' ? 'The paper is with the DQAC for review. It can be edited again if changes are asked for.' : 'This paper is approved and locked.');
+    }
+    const P = await readPaper(await body(request));
+    if (P.type !== a.type) fail(400, 'The assessment type cannot be changed');
+    await env.DB.prepare(`UPDATE assessments SET subject_id=?, subject_name=?, subject_code=?, number=?, duration_min=?, start_at=?, end_at=?, release_mode=?,
+        shuffle=?, negative=?, option_shuffle=?, paper_json=? WHERE id = ?`)
+      .bind(P.subject.id, P.subject.name, P.subject.code, P.number, P.duration, P.start.toISOString(), P.end.toISOString(), P.release,
+        P.shuffle, P.negative, P.optionShuffle, JSON.stringify(P.paper), a.id).run();
+    await writePaper(a.id, P);
+    return json({ id: a.id });
   }
 
   if ((m = route('GET', /^\/api\/assessments\/(\d+)$/))) {
@@ -1515,7 +1580,7 @@ async function handle(request, env, ctx) {
       .bind(a.id)
       .all();
     const secs = await env.DB.prepare(
-      `SELECT s.name FROM assessment_sections x JOIN sections s ON s.id = x.section_id WHERE x.assessment_id = ? ORDER BY s.name`,
+      `SELECT s.id, s.name FROM assessment_sections x JOIN sections s ON s.id = x.section_id WHERE x.assessment_id = ? ORDER BY s.name`,
     ).bind(a.id).all();
     const parts = paperOf(a).parts;
     if (parts) {
@@ -1533,6 +1598,7 @@ async function handle(request, env, ctx) {
       ...a,
       can: { edit: a.faculty_id === user.id && !!user.perms.create, approve: !!user.perms.approve },
       sections: secs.results.map((r) => r.name),
+      section_ids: secs.results.map((r) => r.id),
       questions: qs.results.map((q) => ({
         ...q,
         rubric: JSON.parse(q.rubric_json),

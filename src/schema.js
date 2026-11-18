@@ -253,6 +253,7 @@ export async function prepareDatabase(db) {
     users: { emp_id: 'TEXT', designation: 'TEXT', post: 'TEXT', univ_roll: 'TEXT', college_roll: 'TEXT', email: 'TEXT', mobile: 'TEXT',
       programme_id: 'INTEGER', semester: 'INTEGER', status: "TEXT NOT NULL DEFAULT 'active'", signature: 'TEXT' },
     sections: { programme_id: 'INTEGER', semester: 'INTEGER', coordinator_id: 'INTEGER' },
+    assessments: { subject_id: 'INTEGER', stage: "TEXT NOT NULL DEFAULT 'draft'", approved_by: 'TEXT', approved_at: 'TEXT', approved_by_id: 'INTEGER' },
     subjects: { department_id: 'INTEGER', programme_id: 'INTEGER', type: "TEXT NOT NULL DEFAULT 'Theory'", elective_group: 'TEXT', credits: 'REAL',
       cos_json: "TEXT NOT NULL DEFAULT '[]'" },
   };

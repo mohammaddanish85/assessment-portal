@@ -179,3 +179,50 @@ export async function evaluateAnswer(env, input) {
   else raw = await callWorkersAI(env, buildMessages(input));
   return normalise(raw, input.rubric);
 }
+
+// ---------- rubric suggestion for the faculty ("AI recommends, faculty decides") ----------
+
+const RUBRIC_PROMPT = `You help a university teacher write a marking rubric for one exam question.
+Split the marks into 2 to 5 criteria a marker can check in the student's answer. Each criterion is a short phrase
+(at most 10 words) naming one thing the answer must show, in the order an answer would present it.
+Criterion marks are multiples of 0.5 and must add up exactly to the maximum marks.
+Return only JSON: {"criteria":[{"criterion":"...","marks":2}]}`;
+
+// Scale whatever came back onto the question's maximum marks, in half-marks, so the rubric always adds up.
+function fitRubric(list, max) {
+  const items = (Array.isArray(list) ? list : [])
+    .map((c) => ({ criterion: String(c?.criterion ?? '').trim().slice(0, 120), marks: Number(c?.marks) }))
+    .filter((c) => c.criterion && c.marks > 0)
+    .slice(0, 5);
+  if (!items.length) return [{ criterion: 'Correct and complete answer', marks: max }];
+  const sum = items.reduce((s, c) => s + c.marks, 0);
+  let left = max;
+  return items.map((c, i) => {
+    const m = i === items.length - 1 ? left : Math.max(0.5, Math.round((c.marks / sum) * max * 2) / 2);
+    left -= m;
+    return { criterion: c.criterion, marks: m };
+  }).filter((c) => c.marks > 0);
+}
+
+function mockRubric(modelAnswer, max) {
+  const parts = String(modelAnswer).split(/[.;\n]+/).map((s) => s.trim()).filter((s) => s.length > 3).slice(0, 3);
+  if (!parts.length) return [{ criterion: 'Correct and complete answer', marks: max }];
+  return parts.map((p) => ({ criterion: p.split(/\s+/).slice(0, 8).join(' '), marks: 1 }));
+}
+
+export async function suggestRubric(env, { question, modelAnswer, maxMarks }) {
+  const provider = env.EVAL_PROVIDER || 'workers-ai';
+  if (provider === 'mock') return fitRubric(mockRubric(modelAnswer || question, maxMarks), maxMarks);
+  const messages = [
+    { role: 'system', content: RUBRIC_PROMPT },
+    { role: 'user', content: `<question>\n${question}\n</question>\n<model_answer>\n${modelAnswer || '(not given)'}\n</model_answer>\nMaximum marks: ${maxMarks}` },
+  ];
+  let raw;
+  if (provider === 'openai-compatible') raw = await callOpenAICompatible(env, messages);
+  else {
+    if (!env.AI) throw new Error('Workers AI binding (AI) is not configured');
+    const out = await env.AI.run(env.WORKERS_AI_MODEL || '@cf/meta/llama-3.3-70b-instruct-fp8-fast', { messages, temperature: 0.2, max_tokens: 500 });
+    raw = parseJson(out?.response ?? out);
+  }
+  return fitRubric(raw?.criteria, maxMarks);
+}

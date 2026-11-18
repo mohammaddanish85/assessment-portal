@@ -168,7 +168,15 @@ function viewLogin(owner = false) {
     e.preventDefault();
     const m = document.getElementById('forgot-msg');
     m.hidden = false;
-    m.textContent = 'Passwords are reset by your institute. Students: ask your class coordinator. Faculty and staff: ask the institute admin.';
+    const f = document.getElementById('f');
+    const student = document.querySelector('.tabs [data-role=student]').getAttribute('aria-pressed') === 'true';
+    if (student && f.code.value.trim() && f.username.value.trim()) {
+      api('POST', '/password-request', { code: f.code.value, username: f.username.value }).catch(() => {});
+      m.textContent = 'Your request has gone to your class coordinator. After the reset, log in with the institute\'s first password and set your own.';
+    } else {
+      m.textContent = student ? 'Fill in the institute code and your roll no above, then click "Forgot your password?" again to send a reset request to your class coordinator.'
+        : 'Faculty and staff passwords are reset by the institute admin.';
+    }
   };
   document.getElementById('f').onsubmit = act(async (e) => {
     await api('POST', '/login', Object.fromEntries(new FormData(e.target)));
@@ -313,16 +321,27 @@ function viewChooseType() {
     <div class="types">${Object.entries(KINDS).map(([k, v]) => `<a class="type-card" href="#/new/${k}"><h2>${v.type}</h2><p>${v.blurb}</p></a>`).join('')}</div>`;
 }
 
-async function viewNew(kind) {
+// Opens a saved paper in the same form (only while it can still be edited).
+async function viewEdit(id) {
+  const seq = nav_seq;
+  const a = await api('GET', `/assessments/${id}`);
+  if (seq !== nav_seq) return;
+  const kind = Object.keys(KINDS).find((k) => KINDS[k].type === a.type);
+  if (!kind) throw new Error('This older assessment type cannot be edited');
+  return viewNew(kind, a);
+}
+
+async function viewNew(kind, existing = null) {
   const K = KINDS[kind];
   if (!K) return viewChooseType();
   const seq = nav_seq;
   const master = await api('GET', '/master');
   if (seq !== nav_seq) return;
-  if (!master.subjects.length || !master.sections.length) {
-    app.innerHTML = '<div class="card"><h1>New assessment</h1><p>No subjects or sections are set up yet. Ask the institute admin to add them under Institute setup.</p><a class="btn" href="#/">Back</a></div>';
+  if (!master.subjects.length) {
+    app.innerHTML = `<div class="card"><h1>New assessment</h1><p>${master.allotment ? 'No subject is allotted to you yet. Ask the institute admin to add your subjects and sections under Institute setup → Subject allotment.' : 'No subjects or sections are set up yet. Ask the institute admin to add them under Institute setup.'}</p><a class="btn" href="#/">Back</a></div>`;
     return;
   }
+  const subjectOf = (id) => master.subjects.find((x) => x.id === +id);
   const T = K.type;
   const isMid = T === 'Mid Term', isAsg = T === 'Assignment', hasMcq = K.q !== 'descriptive';
   const local = (d) => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -338,12 +357,12 @@ async function viewNew(kind) {
     'MCQ Test': 'Checked against your answer key. The student sees the result immediately on submit.',
     Hybrid: 'MCQs are checked automatically; written answers get an LLM draft. The whole result is released after your approval.',
   }[T];
-  app.innerHTML = `<div class="between"><h1>New ${T}</h1><a href="#/new" class="small">Change type</a></div>
+  app.innerHTML = `<div class="between"><h1>${existing ? `Edit ${T} ${existing.number}` : `New ${T}`}</h1>${existing ? `<a href="#/a/${existing.id}" class="small">Back without saving</a>` : '<a href="#/new" class="small">Change type</a>'}</div>
     <form id="f">
     <div class="card"><h2>Details</h2>
-      <label>Subject<select name="subject_id" required><option value="">Choose subject…</option>${master.subjects.map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}${x.semester ? ` (Sem ${x.semester})` : ''}</option>`).join('')}</select></label>
+      <label>Subject${master.allotment ? ' (allotted to you)' : ''}<select name="subject_id" required><option value="">Choose subject…</option>${master.subjects.map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}${x.semester ? ` (Sem ${x.semester})` : ''}</option>`).join('')}</select></label>
       <div class="muted small">Sections that will take this ${T}</div>
-      <div class="checks">${master.sections.map((x) => `<label class="choice"><input type="checkbox" name="section" value="${x.id}"> ${esc(x.name)} <span class="muted small">(${x.students} students)</span></label>`).join('')}</div>
+      <div class="checks" id="secs"><span class="muted small">Choose the subject first.</span></div>
       <div class="row"><label>${T} number<input name="number" type="number" min="1" value="1" required></label>
         ${isAsg ? '' : `<label>Duration (minutes)<input name="duration_min" type="number" min="1" max="600" value="${isMid ? 90 : hasMcq ? 30 : 60}" required></label>`}
         ${release}</div>
@@ -365,16 +384,59 @@ async function viewNew(kind) {
         <label>Instructions (one per line)<textarea name="p_instructions" rows="3" placeholder="Question No. 1 is compulsory.&#10;Answer any two questions from PART-B."></textarea></label>`}
       <label>Course outcomes (one per line)<textarea name="p_cos" rows="3" placeholder="CO-1: Explain the fundamentals of …&#10;CO-2: Apply … techniques for …"></textarea></label>
       ${isAsg ? '<label>Introduction / theme (optional, shown above the questions; **text** prints bold)<textarea name="p_intro" rows="3"></textarea></label>' : ''}</div>
-    <div class="card"><h2>Paper structure</h2>
+    <div class="card"><div class="between"><h2>Paper structure</h2>
+        <span class="small"><button type="button" class="ghost small" id="qtpl">Download question template</button>
+        <label class="small" style="display:inline-block;margin:0">Fill from Excel <input type="file" id="qfile" accept=".xlsx,.xls,.csv" style="display:inline-block;width:auto"></label></span></div>
       <div class="row"><label style="max-width:220px">Max marks of the paper<input name="p_max" type="number" min="1" step="0.5" required></label></div>
       <table class="parts"><thead><tr><th>Part</th>${K.q === 'both' ? '<th>Type</th>' : ''}<th>Questions</th><th>Sub-parts in each</th><th>Sub-part numbering</th><th>Student attempts</th><th></th></tr></thead><tbody id="parts"></tbody></table>
       <p><button type="button" class="ghost small" id="addpart">+ Add part</button> <button type="button" id="build">Create question boxes</button></p>
       <p class="muted small">Example: PART-A with 1 question of 10 sub-parts (i to x), attempt 1; PART-B with 3 questions of 2 sub-parts ((a), (b)), attempt 2. When a part gives a choice, the student's best answers in that part are counted.</p></div>
     <div id="qs"></div>
     <p class="muted" id="marksum"></p>
-    <p><button>Save as draft</button></p></form>`;
+    <div id="cocheck"></div>
+    <p><button>${existing ? 'Save changes' : 'Save as draft'}</button></p></form>`;
   const f = document.getElementById('f');
   const qs = document.getElementById('qs');
+  // ---- subject → sections, COs, header ----
+  let cos = [];
+  const coOpts = (sel = '') => `<option value="">${cos.length ? 'Choose CO…' : 'No COs in the scheme'}</option>${cos.map((c) => `<option value="${esc(c.co)}"${c.co === sel ? ' selected' : ''}>${esc(c.co)} · ${esc(RBT[c.rbtl] || '')}</option>`).join('')}`;
+  const ORDN = (n) => `${n}${['th', 'st', 'nd', 'rd'][(n % 100 > 10 && n % 100 < 14) ? 0 : n % 10] || 'th'}`;
+  // Each CO used must have at least one question at the CO's own (highest) Bloom level. Shown to the faculty and to DQAC.
+  const coCheck = () => {
+    const el = document.getElementById('cocheck');
+    if (!el || !cos.length) { if (el) el.innerHTML = ''; return; }
+    const qsx = [...qs.querySelectorAll('.card.q')].map((b) => ({ co: b.querySelector('[data-q=co]').value, rbtl: +b.querySelector('[data-q=rbtl]').value || 0 }));
+    const alerts = coAlerts(cos, qsx);
+    el.innerHTML = alerts.length ? `<div class="note warn"><b>CO and Bloom level check</b> (DQAC will see this)<ul class="tight">${alerts.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>`
+      : qsx.some((q) => q.co) ? '<div class="note"><b>CO and Bloom level check:</b> every CO used has a question at its own level.</div>' : '';
+  };
+  const fillRubric = (box, list) => {
+    const rub = box.querySelector('.rub');
+    rub.innerHTML = '';
+    list.forEach((r) => { const row = rubricRow(); row.querySelector('[data-r=criterion]').value = r.criterion; row.querySelector('[data-r=marks]').value = r.marks; rub.append(row); });
+    if (!list.length) rub.append(rubricRow());
+  };
+  const wireSubject = () => {
+    const setSubject = (keepHeader) => {
+      const sb = subjectOf(f.subject_id.value);
+      const secs = document.getElementById('secs');
+      cos = sb ? sb.cos : [];
+      secs.innerHTML = sb ? sb.sections.map((x) => `<label class="choice"><input type="checkbox" name="section" value="${x.id}"${sb.sections.length === 1 ? ' checked' : ''}> ${esc(x.name)} <span class="muted small">(${x.students} students)</span></label>`).join('') || '<span class="muted small">No sections.</span>'
+        : '<span class="muted small">Choose the subject first.</span>';
+      qs.querySelectorAll('[data-q=co]').forEach((x) => { const v = x.value; x.innerHTML = coOpts(v); });
+      if (sb && !keepHeader) {
+        if (sb.programme && f.p_programme && !f.p_programme.value) f.p_programme.value = isAsg ? sb.programme : `${sb.programme} ${ORDN(sb.semester || 0)} Semester`;
+        if (sb.cos.length && !f.p_cos.value) f.p_cos.value = sb.cos.map((c) => `${c.co}: ${c.text}`).join('\n');
+        if (isAsg && f.p_session && !f.p_session.value && master.session) f.p_session.value = master.session.replace(/\s*(odd|even)\s*$/i, '');
+      }
+      coCheck();
+    };
+    f.subject_id.addEventListener('change', () => setSubject(false));
+    if (existing) {
+      f.subject_id.value = existing.subject_id ?? (master.subjects.find((x) => x.code === existing.subject_code)?.id || '');
+      setSubject(true);
+    }
+  };
 
   const rubricRow = () => {
     const d = document.createElement('div');
@@ -437,12 +499,12 @@ async function viewNew(kind) {
     box.innerHTML = `<h2 class="qn"></h2>
       <label>Question<textarea data-q="text" required></textarea></label>
       <div class="row"><label>Max marks<input type="number" step="0.5" min="0.5" data-q="max_marks" required></label>
-        <label>CO${isMid ? '' : ' (optional)'}<input data-q="co" placeholder="CO-1"${isMid ? ' required' : ''}></label>
+        <label>CO${isMid ? '' : ' (optional)'}<select data-q="co"${isMid ? ' required' : ''}>${coOpts()}</select></label>
         <label>Bloom's taxonomy level<select data-q="rbtl">${rbtOpts}</select></label></div>
       ${qk === 'mcq' ? `<h3>Options <span class="muted small">(select the radio button of the correct option)</span></h3>
         <div class="opt"></div><button type="button" class="ghost small addo">+ Add option</button>`
-      : `<label>Model answer / key points (never shown to students)<textarea data-q="model_answer" required></textarea></label>
-        <h3>Rubric <span class="muted small">(criterion marks must add up to max marks)</span></h3>
+      : `<label>Model answer / key points (shown to the student with the result)<textarea data-q="model_answer" required></textarea></label>
+        <div class="between"><h3>Rubric <span class="muted small">(criterion marks must add up to max marks)</span></h3><button type="button" class="ghost small ai">Suggest rubric (AI)</button></div>
         <div class="rub"></div><button type="button" class="ghost small addr">+ Add criterion</button>`}`;
     if (qk === 'mcq') {
       const opt = box.querySelector('.opt');
@@ -451,8 +513,28 @@ async function viewNew(kind) {
     } else {
       box.querySelector('.rub').append(rubricRow());
       box.querySelector('.addr').onclick = () => box.querySelector('.rub').append(rubricRow());
+      // AI recommends a rubric as soon as the question and model answer are written; the faculty edits it.
+      const suggestRub = async (auto) => {
+        const rub = box.querySelector('.rub');
+        const empty = [...rub.querySelectorAll('[data-r=criterion]')].every((x) => !x.value.trim());
+        if (auto && !empty) return;
+        const text = box.querySelector('[data-q=text]').value.trim();
+        const maxm = +box.querySelector('[data-q=max_marks]').value;
+        if (!text || !maxm) { if (!auto) toast('Write the question and its max marks first', true); return; }
+        const btn = box.querySelector('.ai');
+        btn.disabled = true; btn.textContent = 'Suggesting…';
+        try {
+          const r = await api('POST', '/ai/rubric', { question: text, model_answer: box.querySelector('[data-q=model_answer]').value, max_marks: maxm });
+          fillRubric(box, r.rubric);
+          if (!auto) toast('Rubric suggested. Edit it as you like.');
+        } catch (e) { if (!auto) toast(e.message, true); } finally { btn.disabled = false; btn.textContent = 'Suggest rubric (AI)'; }
+      };
+      box.querySelector('.ai').onclick = () => suggestRub(false);
+      box.querySelector('[data-q=model_answer]').addEventListener('blur', () => suggestRub(true));
     }
     box.querySelector('[data-q=max_marks]').oninput = sumMarks;
+    box.querySelector('[data-q=co]').onchange = coCheck;
+    box.querySelector('[data-q=rbtl]').onchange = coCheck;
     return box;
   };
   // Builds one box per question (or sub-part), numbered across the paper. Boxes already filled in are kept.
@@ -482,6 +564,7 @@ async function viewNew(kind) {
     });
     builtParts = parts;
     sumMarks();
+    coCheck();
   };
   const sumMarks = () => {
     const rows = [...qs.querySelectorAll('.card.q')].map((b) => ({ part: b.dataset.part, qgroup: +b.dataset.qgroup, m: +b.querySelector('[data-q=max_marks]').value || 0 }));
@@ -494,6 +577,7 @@ async function viewNew(kind) {
   document.getElementById('build').onclick = () => build();
   f.p_max.oninput = sumMarks;
   build();
+  wireSubject();
 
   // Paper header: suggested title, and the last header used for this subject is filled back in.
   const MONTH = new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' });
@@ -552,16 +636,152 @@ async function viewNew(kind) {
         })),
       };
     });
-    const r = await api('POST', '/assessments', {
+    const r = await api(existing ? 'PUT' : 'POST', existing ? `/assessments/${existing.id}` : '/assessments', {
       subject_id: +f.subject_id.value, section_ids: [...f.querySelectorAll('[name=section]:checked')].map((x) => +x.value), type: T,
       number: +f.number.value, duration_min: f.duration_min ? +f.duration_min.value : null,
       start_at: new Date(f.start_at.value).toISOString(), end_at: new Date(f.end_at.value).toISOString(),
       release_mode: f.release_mode?.value, shuffle: f.shuffle.checked, option_shuffle: !!f.option_shuffle?.checked,
       negative: f.negative && f.querySelector('[name=negmode]:checked').value === 'yes' ? +f.negative.value : 0, questions, paper,
     });
-    toast('Saved as draft');
+    toast(existing ? 'Changes saved' : 'Saved as draft');
     location.hash = `#/a/${r.id}`;
   });
+
+  // ---- questions from Excel: one row per question or sub-part ----
+  const QCOLS = ['Part', 'Q.No', 'Sub-part', 'Type', 'Question', 'CO', 'RBTL', 'Marks', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct option', 'Model answer', 'Rubric'];
+  document.getElementById('qtpl').onclick = act(async () => {
+    await loadXLSX();
+    const ex = K.q === 'mcq'
+      ? [['', 1, '', 'MCQ', 'Which port does HTTPS use by default?', 'CO1', 'Remember', 1, '80', '443', '22', '21', 'B', '', '']]
+      : [['A', 1, 'i', 'Written', 'Define the role of a cover object in a steganographic system.', 'CO1', 'Remember', 1, '', '', '', '', '', 'The cover object is the carrier medium that hides the secret message.', 'Correct definition=1'],
+        ['B', 2, 'a', 'Written', 'Explain the working of a steganographic communication system with a block diagram (describe the diagram in words).', 'CO1', 'Understand', 5, '', '', '', '', '', 'Sender, cover object, embedding algorithm with key, stego object, channel, extraction at receiver.', 'Block diagram explained=2; Roles of each part=3']];
+    const ws = XLSX.utils.aoa_to_sheet([QCOLS, ...ex]);
+    ws['!cols'] = QCOLS.map((c) => ({ wch: c === 'Question' || c === 'Model answer' ? 50 : 12 }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Questions');
+    XLSX.writeFile(wb, `COGNEXA_${T.replace(/\s+/g, '_')}_questions.xlsx`);
+  });
+  document.getElementById('qfile').onchange = act(async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    await loadXLSX();
+    const wb = XLSX.read(await file.arrayBuffer());
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: false })
+      .map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [slug(k), String(v).trim()])))
+      .filter((r) => r.question);
+    e.target.value = '';
+    if (!rows.length) throw new Error('No questions found. Use the question template (a "Question" column is needed).');
+    // Group: part → question number → sub-parts, in the order of the sheet.
+    const parts = [];
+    for (const [i, r] of rows.entries()) {
+      const name = isAsg || K.q === 'mcq' ? (r.part || '') : (r.part || 'A');
+      let p = parts.find((x) => x.name === name);
+      if (!p) parts.push((p = { name, qs: [], kind: K.q === 'both' ? (/mcq/i.test(r.type) ? 'mcq' : 'descriptive') : K.q }));
+      const qn = r.qno || String(i + 1);
+      let q = p.qs.find((x) => x.qn === qn);
+      if (!q) p.qs.push((q = { qn, subs: [] }));
+      q.subs.push(r);
+    }
+    for (const p of parts) {
+      const n = p.qs[0].subs.length;
+      if (p.qs.some((q) => q.subs.length !== n)) throw new Error(`Part ${p.name || '(none)'}: every question needs the same number of sub-parts`);
+      if (K.q === 'both' && p.qs.some((q) => q.subs.some((r) => (/mcq/i.test(r.type) ? 'mcq' : 'descriptive') !== p.kind))) throw new Error(`Part ${p.name}: mix of MCQ and written rows; keep each part one type`);
+    }
+    const prev = readParts();
+    partsBody.innerHTML = '';
+    parts.forEach((p) => {
+      const old = prev.find((x) => x.name === p.name);
+      const sub0 = String(p.qs[0].subs[0].subpart || '').toLowerCase();
+      partRow({ name: p.name, kind: p.kind, questions: p.qs.length, subparts: p.qs[0].subs.length,
+        style: /^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$/.test(sub0.replace(/[().]/g, '')) && sub0.replace(/[().]/g, '') !== 'v' ? 'roman' : 'alpha',
+        attempt: old && old.questions === p.qs.length ? old.attempt : p.qs.length });
+    });
+    qs.innerHTML = '';
+    build();
+    const flat = parts.flatMap((p) => p.qs.flatMap((q) => q.subs));
+    const boxes = [...qs.querySelectorAll('.card.q')];
+    const lv = (v) => { const t = String(v).toLowerCase(); const m2 = /(\d)\s*$/.exec(t); if (m2) return m2[1]; const i = RBT.findIndex((x) => x && x.toLowerCase() === t.replace('analyze', 'analyse')); return i > 0 ? String(i) : ''; };
+    boxes.forEach((b, i) => {
+      const r = flat[i];
+      if (!r) return;
+      b.querySelector('[data-q=text]').value = r.question;
+      b.querySelector('[data-q=max_marks]').value = r.marks;
+      const co = b.querySelector('[data-q=co]');
+      const coV = String(r.co).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (cos.some((c) => c.co === coV)) co.value = coV;
+      b.querySelector('[data-q=rbtl]').value = lv(r.rbtl);
+      if (b.dataset.kind === 'mcq') {
+        const opts = [r.optiona, r.optionb, r.optionc, r.optiond].filter(Boolean);
+        const rowsEl = [...b.querySelectorAll('.opt .rubric-row')];
+        opts.forEach((o, k) => { if (rowsEl[k]) rowsEl[k].querySelector('[data-o=text]').value = o; });
+        const ci = 'ABCD'.indexOf(String(r.correctoption).trim().toUpperCase()[0] || '');
+        if (ci >= 0 && rowsEl[ci]) rowsEl[ci].querySelector('input[type=radio]').checked = true;
+      } else {
+        b.querySelector('[data-q=model_answer]').value = r.modelanswer;
+        const rub = String(r.rubric || '').split(';').map((x) => x.trim()).filter(Boolean).map((x) => { const k = x.lastIndexOf('='); return k > 0 ? { criterion: x.slice(0, k).trim(), marks: +x.slice(k + 1) } : null; }).filter(Boolean);
+        if (rub.length) fillRubric(b, rub);
+      }
+    });
+    sumMarks(); coCheck();
+    const total = flat.reduce((s2, r) => s2 + (+r.marks || 0), 0);
+    if (!+f.p_max.value) { f.p_max.value = bestTotal(builtParts, boxes.map((b) => ({ part: b.dataset.part, qgroup: +b.dataset.qgroup, m: +b.querySelector('[data-q=max_marks]').value || 0 })), 'm') || total; sumMarks(); }
+    toast(`${flat.length} question(s) filled from Excel. Check them, then save.`);
+  });
+
+  // ---- editing a saved paper: put everything back into the form ----
+  if (existing) {
+    const P = paperInfo(existing);
+    const lc = (d) => new Date(new Date(d) - new Date(d).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    f.number.value = existing.number;
+    if (f.duration_min) f.duration_min.value = existing.duration_min;
+    f.start_at.value = lc(existing.start_at); f.end_at.value = lc(existing.end_at);
+    if (f.release_mode) f.release_mode.value = existing.release_mode;
+    f.shuffle.checked = !!existing.shuffle;
+    if (f.option_shuffle) f.option_shuffle.checked = !!existing.option_shuffle;
+    if (hasMcq && existing.negative) {
+      f.querySelector('[name=negmode][value=yes]').checked = true;
+      document.getElementById('negrow').hidden = false; document.getElementById('negnote').hidden = false;
+      f.negative.value = String(existing.negative);
+    }
+    ['title', 'programme', 'session', 'units', 'instructions', 'cos', 'intro'].forEach((k) => { if (f['p_' + k]) f['p_' + k].value = P[k] || ''; });
+    titleTouched = true;
+    f.p_max.value = P.max_marks || '';
+    (existing.section_ids || []).forEach((id) => { const c = f.querySelector(`[name=section][value="${id}"]`); if (c) c.checked = true; });
+    if (P.parts) { partsBody.innerHTML = ''; P.parts.forEach(partRow); qs.innerHTML = ''; build(); }
+    const boxes = [...qs.querySelectorAll('.card.q')];
+    existing.questions.forEach((q) => {
+      const b = boxes.find((x) => x.dataset.part === (q.part || '') && x.dataset.label === q.label) || boxes[q.seq - 1];
+      if (!b) return;
+      b.querySelector('[data-q=text]').value = q.text;
+      b.querySelector('[data-q=max_marks]').value = q.max_marks;
+      b.querySelector('[data-q=co]').innerHTML = coOpts(q.co || '');
+      b.querySelector('[data-q=rbtl]').value = q.rbtl || '';
+      if (q.kind === 'mcq') {
+        const opt = b.querySelector('.opt');
+        const grp = opt.querySelector('input[type=radio]').name;
+        opt.innerHTML = '';
+        q.options.forEach((o, k) => { const row = optionRow(grp); row.querySelector('[data-o=text]').value = o; if (k === q.correct_index) row.querySelector('input[type=radio]').checked = true; opt.append(row); });
+      } else {
+        b.querySelector('[data-q=model_answer]').value = q.model_answer;
+        fillRubric(b, q.rubric);
+      }
+    });
+    sumMarks(); coCheck();
+  }
+}
+
+// CO coverage rule: every CO used needs at least one question at the CO's own (highest) Bloom level.
+function coAlerts(cos, list) {
+  const out = [];
+  for (const c of cos) {
+    const mine = list.filter((q) => q.co === c.co);
+    if (!mine.length) continue;
+    const top = Math.max(...mine.map((q) => q.rbtl || 0));
+    if (top < c.rbtl) out.push(`${c.co} is at ${RBT[c.rbtl]} level, but its highest question is ${top ? RBT[top] : 'not given a level'}.`);
+  }
+  const unused = cos.filter((c) => !list.some((q) => q.co === c.co)).map((c) => c.co);
+  if (unused.length && list.some((q) => q.co)) out.push(`Not covered in this paper: ${unused.join(', ')} (fine if planned for another test).`);
+  return out;
 }
 
 const attemptPill = (t) => {
@@ -587,7 +807,7 @@ async function viewAssessment(id) {
       <p class="downloads"><b class="small">Download for records:</b> <a class="btn ghost" href="#/print/report/${a.id}">Assessment report</a>
         <a class="btn ghost" href="#/print/paper/${a.id}">Question paper</a> <a class="btn ghost" href="#/print/key/${a.id}">Paper with answer key and rubric</a>
         <a class="btn ghost" href="#/print/sheets/${a.id}">All evaluated answer sheets</a></p>
-      ${a.attempts.length || !a.can.edit ? '' : '<p class="downloads"><button type="button" class="ghost small danger" id="delassess">Delete this assessment</button> <span class="muted small">Possible only until a student starts it.</span></p>'}</div>
+      ${a.attempts.length || !a.can.edit ? '' : `<p class="downloads">${['draft', 'changes'].includes(a.stage || 'draft') ? `<a class="btn ghost" href="#/edit/${a.id}">Edit paper</a> ` : ''}<button type="button" class="ghost small danger" id="delassess">Delete this assessment</button> <span class="muted small">Possible only until a student starts it.</span></p>`}</div>
     <div class="card" id="analysis"></div>
     <div class="card"><h2>Submissions</h2>
       ${a.attempts.length ? `<table><thead><tr><th>Roll no</th><th>Student</th><th>Status</th><th>Draft marks</th><th>Final</th><th>Tab switches</th><th>Paste tries</th><th></th></tr></thead><tbody>
@@ -1051,6 +1271,7 @@ async function route() {
     if (page === 'new' && p.create) return id ? await viewNew(decodeURIComponent(id)) : viewChooseType();
     if (page === 'print' && id) return await viewPrint(id, +location.hash.split('/')[3]);
     if (page === 'a' && id) return await viewAssessment(+id);
+    if (page === 'edit' && id && p.create) return await viewEdit(+id);
     if (page === 'review' && id) return await viewReview(+id);
     if (page === 'list') return await viewFacultyHome();
     if (p.manage && !p.create) return await viewInstSetup('profile');
