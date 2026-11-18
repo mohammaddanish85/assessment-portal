@@ -361,6 +361,8 @@ async function handle(request, env, ctx) {
       .bind(inst ?? null, user.id, user.name, action, String(detail).slice(0, 500), now()).run();
 
   if (route('POST', /^\/api\/password$/)) {
+    // Students set their own password once (first login or after a reset); later changes go through the institute.
+    if (user.role === 'student' && !user.must_change) fail(403, 'Ask your class coordinator to reset your password');
     const b = await body(request);
     const me = await env.DB.prepare('SELECT pw_hash, pw_salt FROM users WHERE id = ?').bind(user.id).first();
     if (!safeEqual((await hashPassword(str(b.current, 'Current password', 100), me.pw_salt)).hash, me.pw_hash)) {

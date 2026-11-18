@@ -8,8 +8,8 @@
 
 :root {
   --paper: #fbfcfa;
-  --ink: #14213d;
-  --ink-soft: #46536b;
+  --ink: #2a2140;
+  --ink-soft: #5a5170;
   --rule: #d5e0ee;
   --graphite: #6f7682;
   --green: #0b6e4f;
@@ -40,7 +40,7 @@ main > section { width: var(--wrap); margin-inline: auto; padding-block: clamp(3
 .site-head { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: 0.9rem max(1.25rem, (100% - 1120px) / 2); background: color-mix(in srgb, var(--paper) 92%, transparent); backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--rule); }
-.wordmark { font: 700 1.25rem/1 var(--sans); letter-spacing: 0.14em; text-decoration: none; color: var(--ink); }
+.wordmark { display: inline-flex; align-items: center; gap: 0.55rem; font: 500 1.3rem/1 var(--serif); letter-spacing: 0.14em; text-decoration: none; color: var(--ink); }
 .site-head nav { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9375rem; }
 .site-head nav a { text-decoration: none; color: var(--ink-soft); }
 .site-head nav a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 0.3em; }

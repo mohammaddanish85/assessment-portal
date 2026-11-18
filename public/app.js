@@ -88,13 +88,13 @@ const act = (fn) => async (e) => {
 
 function drawNav() {
   const brand = document.querySelector('.brand');
-  brand.innerHTML = user && user.institute_name ? `COGNEXA <span class="tag">${esc(user.institute_name)}</span>` : 'COGNEXA';
+  brand.innerHTML = `<img src="/logo.svg" alt="" width="30" height="30"><span>COGNEXA</span>${user && user.institute_name ? ` <span class="tag">${esc(user.institute_name)}</span>` : ''}`;
   if (!user) return (nav.innerHTML = '<a href="/">Home</a>');
   const p = user.perms || {};
   const links = user.role === 'owner' ? '<a href="#/">Institutes and requests</a>'
     : user.role === 'student' ? '<a href="#/">My assessments</a>'
     : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}<a href="#/list">Assessments</a>${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
-  nav.innerHTML = `${user.must_change ? '' : links}<a href="#/password" class="muted small">${esc(user.name)}</a><button class="ghost small" id="logout">Log out</button>`;
+  nav.innerHTML = `${user.must_change ? '' : links}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
   document.getElementById('logout').onclick = act(async () => {
     await api('POST', '/logout');
     user = null;
@@ -119,14 +119,57 @@ function viewSetup() {
   });
 }
 
+const LOGO = '<img src="/logo.svg" alt="" width="34" height="34">';
 function viewLogin(owner = false) {
-  app.innerHTML = `<div class="card narrow"><h1>${owner ? 'Platform owner log in' : 'Log in'}</h1>
-    <form id="f">${owner ? '' : '<label>Institute code<input name="code" required autocapitalize="characters" autocomplete="organization" placeholder="For example 1-7216281"></label>'}
-    <label>Username<input name="username" required autocomplete="username"></label>
-    <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
-    <button>Log in</button></form>
-    <p class="small" style="margin-top:14px"><a href="#" id="swap">${owner ? 'Log in as an institute member' : 'Platform owner log in'}</a></p></div>`;
+  const ROLE = {
+    student: { label: 'University roll no', hint: 'Use your college roll no if the university one is not issued yet' },
+    staff: { label: 'Employee ID', hint: '' },
+    admin: { label: 'Username', hint: '' },
+  };
+  app.innerHTML = `<div class="login-wrap">
+    <section class="ruled" aria-label="About COGNEXA">
+      <div style="display:flex;align-items:center;gap:10px;height:36px">${LOGO}<span style="font:500 24px/1 var(--serif);letter-spacing:.08em">COGNEXA</span></div>
+      <p class="big">Beyond assessment.</p>
+      <p class="big" style="white-space:nowrap">Towards learning. <span class="tick" aria-hidden="true">✓ 10/10</span></p>
+      <p class="q">Q1. What does COGNEXA do?</p>
+      <p class="hand">Faculty set papers, students write live,</p>
+      <p class="hand">every answer gets marks and feedback.</p>
+      <p class="inks"><span><span class="dot" style="background:#8a8399"></span>AI recommends</span><span><span class="dot" style="background:var(--ok)"></span>Faculty decides</span><span><span class="dot" style="background:#e0a21b"></span>Student learns</span></p>
+      <span class="side" aria-hidden="true">for examiner's use</span>
+    </section>
+    <section class="cover">
+      <div class="booklet">
+        <div class="between"><h1>${owner ? 'Platform owner' : 'Log in'}</h1><span class="small muted">Answer booklet</span></div>
+        <form id="f">
+        ${owner ? '<div style="height:14px"></div>' : `<div class="tabs" role="group" aria-label="I am a">
+          <button type="button" data-role="student" aria-pressed="true">Student</button>
+          <button type="button" data-role="staff" aria-pressed="false">Faculty and staff</button>
+          <button type="button" data-role="admin" aria-pressed="false">Institute admin</button></div>
+          <label>Institute code<input name="code" required autocapitalize="characters" autocomplete="organization" placeholder="Your AICTE ID, e.g. 1-7216281"></label>`}
+        <label><span id="ulabel">${owner ? 'Username' : ROLE.student.label}</span><input name="username" required autocomplete="username"></label>
+        <p class="small muted" id="uhint" style="margin:-6px 0 10px">${owner ? '' : ROLE.student.hint}</p>
+        <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+        <button class="go">Log in</button></form>
+        <p class="small muted" style="margin:12px 0 0" id="forgot-msg" hidden></p>
+        <div class="foot-links">${owner ? '<a href="#" id="swap">Log in as an institute member</a>'
+          : '<a href="#" id="forgot">Forgot your password?</a><a href="/#access">Institute not on COGNEXA? Request access</a>'}</div>
+      </div>
+      ${owner ? '' : '<p class="small" style="margin-top:12px;text-align:right"><a href="#" id="swap" class="muted">Platform owner</a></p>'}
+      <p class="sigline" aria-hidden="true">Invigilator's signature ____</p>
+    </section></div>`;
   document.getElementById('swap').onclick = (e) => { e.preventDefault(); viewLogin(!owner); };
+  document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    document.getElementById('ulabel').textContent = ROLE[b.dataset.role].label;
+    document.getElementById('uhint').textContent = ROLE[b.dataset.role].hint;
+  }));
+  const fg = document.getElementById('forgot');
+  if (fg) fg.onclick = (e) => {
+    e.preventDefault();
+    const m = document.getElementById('forgot-msg');
+    m.hidden = false;
+    m.textContent = 'Passwords are reset by your institute. Students: ask your class coordinator. Faculty and staff: ask the institute admin.';
+  };
   document.getElementById('f').onsubmit = act(async (e) => {
     await api('POST', '/login', Object.fromEntries(new FormData(e.target)));
     user = await api('GET', '/me');
@@ -136,8 +179,8 @@ function viewLogin(owner = false) {
 }
 
 function viewPassword() {
-  app.innerHTML = `<div class="card narrow"><h1>Change password</h1>
-    ${user.must_change ? '<div class="note warn">Your password was set by someone else. Choose your own before you continue.</div>' : ''}
+  app.innerHTML = `<div class="card narrow"><h1>${user.must_change ? 'Set your own password' : 'Change password'}</h1>
+    ${user.must_change ? '<div class="note warn">This is your first login (or your password was reset). Choose your own password before you continue. If you forget it later, your institute resets it.</div>' : ''}
     <form id="f"><label>Current password<input name="current" type="password" required autocomplete="current-password"></label>
     <label>New password (min 8 characters)<input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
     <label>New password again<input name="again" type="password" minlength="8" required autocomplete="new-password"></label>
@@ -1230,7 +1273,7 @@ async function route() {
     }
     drawNav();
     const [, page, id] = location.hash.split('/');
-    if (user.must_change || page === 'password') return viewPassword();
+    if (user.must_change || (page === 'password' && user.role !== 'student')) return viewPassword();
     if (user.role === 'owner') return await viewOwner();
     if (user.role === 'student') {
       if (page === 'attempt' && id) return await viewAttempt(+id);
