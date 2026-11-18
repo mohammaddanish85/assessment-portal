@@ -149,6 +149,47 @@ export const SCHEMA = [
     created_at TEXT NOT NULL
   )`,
   // Who did what: approvals, mark changes, account and password changes.
+  `CREATE TABLE IF NOT EXISTS programmes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    department_id INTEGER,
+    name TEXT NOT NULL,
+    UNIQUE (institute_id, name)
+  )`,
+  // Who teaches which subject in which section (one faculty per subject and section).
+  `CREATE TABLE IF NOT EXISTS allotments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    subject_id INTEGER NOT NULL,
+    section_id INTEGER NOT NULL,
+    faculty_id INTEGER NOT NULL,
+    UNIQUE (subject_id, section_id)
+  )`,
+  // Departmental quality assurance committee, chosen by the HOD.
+  `CREATE TABLE IF NOT EXISTS dqac (
+    institute_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    position TEXT NOT NULL DEFAULT 'member',
+    UNIQUE (department_id, user_id)
+  )`,
+  // Split electives: which student takes which elective subject.
+  `CREATE TABLE IF NOT EXISTS elective_choices (
+    institute_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    subject_id INTEGER NOT NULL,
+    UNIQUE (student_id, subject_id)
+  )`,
+  // "Forgot password" requests from students, answered by the class coordinator (or registrar / admin).
+  `CREATE TABLE IF NOT EXISTS reset_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL,
+    done_by TEXT,
+    done_at TEXT
+  )`,
   `CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     institute_id INTEGER,
@@ -206,5 +247,18 @@ export async function prepareDatabase(db) {
   if (!ic.has('letterhead')) add.push("ALTER TABLE institutes ADD COLUMN letterhead TEXT NOT NULL DEFAULT ''");
   if (!ic.has('format_json')) add.push("ALTER TABLE institutes ADD COLUMN format_json TEXT NOT NULL DEFAULT '{}'");
   if (!q.has('qgroup')) add.push('ALTER TABLE questions ADD COLUMN qgroup INTEGER');
+  // Institute setup: academic structure, people and settings.
+  const want = {
+    institutes: { settings_json: "TEXT NOT NULL DEFAULT '{}'" },
+    users: { emp_id: 'TEXT', designation: 'TEXT', post: 'TEXT', univ_roll: 'TEXT', college_roll: 'TEXT', email: 'TEXT', mobile: 'TEXT',
+      programme_id: 'INTEGER', semester: 'INTEGER', status: "TEXT NOT NULL DEFAULT 'active'", signature: 'TEXT' },
+    sections: { programme_id: 'INTEGER', semester: 'INTEGER', coordinator_id: 'INTEGER' },
+    subjects: { department_id: 'INTEGER', programme_id: 'INTEGER', type: "TEXT NOT NULL DEFAULT 'Theory'", elective_group: 'TEXT', credits: 'REAL',
+      cos_json: "TEXT NOT NULL DEFAULT '[]'" },
+  };
+  for (const [table, columns] of Object.entries(want)) {
+    const have = table === 'institutes' ? ic : await cols(table);
+    for (const [c, type] of Object.entries(columns)) if (!have.has(c)) add.push(`ALTER TABLE ${table} ADD COLUMN ${c} ${type}`);
+  }
   if (add.length) await db.batch(add.map((x) => db.prepare(x)));
 }

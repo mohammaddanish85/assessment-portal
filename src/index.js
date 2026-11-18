@@ -69,6 +69,7 @@ function cleanPerms(role, p) {
     manage: role === 'admin' ? true : !!p.manage,
     create: !!p.create,
     approve: !!p.approve,
+    students: !!p.students,
     reports: ['own', 'department', 'institute'].includes(p.reports) ? p.reports : d.reports,
   };
 }
@@ -77,7 +78,7 @@ async function currentUser(request, env) {
   const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(request.headers.get('cookie') || '');
   if (!m) return null;
   const u = await env.DB.prepare(
-    `SELECT u.id, u.role, u.name, u.username, u.roll_no, u.section_id, u.institute_id, u.department_id, u.perms, u.must_change,
+    `SELECT u.id, u.role, u.name, u.username, u.roll_no, u.section_id, u.institute_id, u.department_id, u.perms, u.must_change, u.post,
             i.name AS institute_name, i.code AS institute_code, i.status AS institute_status
      FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN institutes i ON i.id = u.institute_id
      WHERE s.token = ? AND s.expires_at > ?`,
@@ -130,6 +131,43 @@ function countBest(parts, rows, key) {
     [...groups.values()].sort((x, y) => y.s - x.s).slice(p.attempt).forEach((g) => g.rows.forEach((r) => (r.counted = false)));
   }
   return Math.round(rows.reduce((s, r) => s + (r.counted ? Number(r[key] ?? 0) : 0), 0) * 100) / 100;
+}
+
+// ---------- institute settings ----------
+
+const SETTING_DEFAULTS = { session: '', default_password: '', pass_percent: 40, rank_scope: 'section', code_minutes: 5 };
+function instSettings(row) {
+  let s = {};
+  try { s = JSON.parse(row?.settings_json || '{}'); } catch { /* defaults */ }
+  return { ...SETTING_DEFAULTS, ...s };
+}
+
+// Faculty-list "Role" column → account role and rights. Every post except Registrar and Nodal still teaches.
+const POSTS = {
+  faculty: { label: 'Faculty', role: 'faculty', perms: { create: true, approve: true, reports: 'own' } },
+  hod: { label: 'HOD', role: 'hod', perms: { create: true, approve: true, reports: 'department' } },
+  dean: { label: 'Dean', role: 'nodal', perms: { create: true, approve: true, reports: 'institute' } },
+  director: { label: 'Director', role: 'nodal', perms: { create: true, approve: true, reports: 'institute' } },
+  registrar: { label: 'Registrar', role: 'nodal', perms: { students: true, reports: 'institute' } },
+  nodal: { label: 'Nodal officer', role: 'nodal', perms: { reports: 'institute' } },
+};
+const postOf = (v) => {
+  const k = String(v || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  if (!k) return 'faculty';
+  if (k === 'headofdepartment') return 'hod';
+  if (k === 'nodalofficer') return 'nodal';
+  return POSTS[k] ? k : null;
+};
+
+// Bloom's level from "3", "L3", "RBTL-3", "BTL3" or "Apply".
+const RBT_NAMES = ['remember', 'understand', 'apply', 'analyse', 'evaluate', 'create'];
+function rbtlOf(v) {
+  const t = String(v ?? '').trim().toLowerCase();
+  if (!t) return null;
+  const n = /(\d)\s*$/.exec(t);
+  if (n && +n[1] >= 1 && +n[1] <= 6) return +n[1];
+  const i = RBT_NAMES.indexOf(t.replace('analyze', 'analyse'));
+  return i >= 0 ? i + 1 : null;
 }
 
 // ---------- evaluation ----------
@@ -345,14 +383,39 @@ async function handle(request, env, ctx) {
     return json({ ok: true });
   }
 
+  // "Forgot password" from the login page. The answer is the same whether or not the account exists.
+  if (route('POST', /^\/api\/password-request$/)) {
+    const b = await body(request);
+    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    const key = 'pwreq:' + hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip))).slice(0, 32);
+    const recent = await env.DB.prepare('SELECT COUNT(*) AS n FROM login_failures WHERE key = ? AND at > ?')
+      .bind(key, new Date(Date.now() - 3600e3).toISOString()).first();
+    if (recent.n >= 10) fail(429, 'Too many requests from this network. Try again in an hour.');
+    await env.DB.prepare('INSERT INTO login_failures (key, at) VALUES (?,?)').bind(key, now()).run();
+    const ins = await env.DB.prepare('SELECT id FROM institutes WHERE code = ? AND status = ?')
+      .bind(String(b.code || '').trim().toUpperCase(), 'active').first();
+    const st = ins && await env.DB.prepare(`SELECT id FROM users WHERE institute_id = ? AND username = ? AND role = 'student'`)
+      .bind(ins.id, String(b.username || '').trim().toLowerCase()).first();
+    if (st) {
+      const open = await env.DB.prepare(`SELECT 1 FROM reset_requests WHERE student_id = ? AND status = 'open'`).bind(st.id).first();
+      if (!open) await env.DB.prepare('INSERT INTO reset_requests (institute_id, student_id, created_at) VALUES (?,?,?)').bind(ins.id, st.id, now()).run();
+    }
+    return json({ ok: true });
+  }
+
   const user = await currentUser(request, env);
   if (!user) fail(401, 'Please log in');
   const inst = user.institute_id;
 
   if (route('GET', /^\/api\/me$/)) {
+    const [coord, dq] = user.role === 'student' || user.role === 'owner' ? [{ results: [] }, null] : await env.DB.batch([
+      env.DB.prepare('SELECT id, name FROM sections WHERE coordinator_id = ? AND institute_id = ? ORDER BY name').bind(user.id, inst),
+      env.DB.prepare('SELECT position FROM dqac WHERE user_id = ?').bind(user.id),
+    ]);
     return json({
-      id: user.id, role: user.role, name: user.name, username: user.username, roll_no: user.roll_no,
+      id: user.id, role: user.role, name: user.name, username: user.username, roll_no: user.roll_no, post: user.post,
       perms: user.perms, must_change: !!user.must_change, institute_name: user.institute_name, institute_code: user.institute_code,
+      coordinates: coord.results, dqac: dq?.results?.[0]?.position || null,
     });
   }
 
@@ -468,10 +531,12 @@ async function handle(request, env, ctx) {
 
   // Institute details printed on documents. Readable by every signed-in member of the institute.
   if (route('GET', /^\/api\/settings$/)) {
-    const i = await env.DB.prepare('SELECT name, line, logo, letterhead, format_json, code FROM institutes WHERE id = ?').bind(inst).first();
+    const i = await env.DB.prepare('SELECT name, line, logo, letterhead, format_json, settings_json, code FROM institutes WHERE id = ?').bind(inst).first();
     let format = {};
     try { format = JSON.parse(i.format_json || '{}'); } catch {}
-    return json({ institute: i.name, line: i.line, logo: i.logo, letterhead: i.letterhead, format, code: i.code });
+    const settings = instSettings(i);
+    delete settings.default_password; // never sent to the browser
+    return json({ institute: i.name, line: i.line, logo: i.logo, letterhead: i.letterhead, format, settings, code: i.code });
   }
 
   const isStaff = STAFF_ROLES.includes(user.role);
@@ -571,8 +636,20 @@ async function handle(request, env, ctx) {
       tax_asg: ft('tax_asg', 40), tax_asg_style: fi.tax_asg_style === 'code' ? 'code' : 'name',
       sign_exam: ft('sign_exam', 200), sign_asg: ft('sign_asg', 200), roll: fi.roll !== false,
     };
-    await env.DB.prepare('UPDATE institutes SET name = ?, line = ?, logo = ?, letterhead = ?, format_json = ? WHERE id = ?')
-      .bind(str(b.institute, 'Institute name', 150), typeof b.line === 'string' ? b.line.trim().slice(0, 200) : '', logo, lh, JSON.stringify(format), inst).run();
+    // Institute-wide rules: the current academic session, first password, pass mark, rank scope, start-code interval.
+    const cur = instSettings(await env.DB.prepare('SELECT settings_json FROM institutes WHERE id = ?').bind(inst).first());
+    const si = b.settings && typeof b.settings === 'object' ? b.settings : {};
+    const settings = {
+      session: typeof si.session === 'string' ? si.session.trim().slice(0, 40) : cur.session,
+      default_password: typeof si.default_password === 'string' && si.default_password.trim() ? si.default_password.trim().slice(0, 50) : cur.default_password,
+      pass_percent: Number(si.pass_percent) >= 1 && Number(si.pass_percent) <= 100 ? Number(si.pass_percent) : cur.pass_percent,
+      rank_scope: si.rank_scope ? (si.rank_scope === 'branch' ? 'branch' : 'section') : cur.rank_scope,
+      code_minutes: [5, 10].includes(Number(si.code_minutes)) ? Number(si.code_minutes) : cur.code_minutes,
+    };
+    if (settings.default_password && settings.default_password.length < 6) fail(400, 'The first password must be at least 6 characters');
+    await env.DB.prepare('UPDATE institutes SET name = ?, line = ?, logo = ?, letterhead = ?, format_json = ?, settings_json = ? WHERE id = ?')
+      .bind(str(b.institute, 'Institute name', 150), typeof b.line === 'string' ? b.line.trim().slice(0, 200) : '', logo, lh,
+        JSON.stringify(format), JSON.stringify(settings), inst).run();
     return json({ ok: true });
   }
 
@@ -780,6 +857,483 @@ async function handle(request, env, ctx) {
     ]);
     await audit('password reset', `${target.name} (${target.role})`);
     return json({ ok: true });
+  }
+
+  // ----- institute setup: programmes, scheme, faculty, sections, allotment, students (Excel imports) -----
+
+  const canStudents = () => (isStaff && (user.perms.students || user.perms.manage)) || fail(403, 'Only the registrar or the institute admin can do this');
+  const settingsRow = async () => instSettings(await env.DB.prepare('SELECT settings_json FROM institutes WHERE id = ?').bind(inst).first());
+  // Everyone created by an import gets the institute's first password; it is hashed once for the whole batch.
+  let firstPw = null;
+  const firstPassword = async () => {
+    if (firstPw) return firstPw;
+    const st = await settingsRow();
+    if (!st.default_password) fail(400, 'Set the first password for new accounts in Institute setup → Profile first');
+    firstPw = await hashPassword(st.default_password);
+    return firstPw;
+  };
+  const low = (v) => String(v ?? '').trim().toLowerCase();
+  const txt = (v, n = 200) => String(v ?? '').trim().slice(0, n);
+
+  if (route('GET', /^\/api\/setup\/data$/)) {
+    if (!(isStaff && (user.perms.manage || user.perms.students || user.role === 'hod' || user.perms.reports === 'institute'))) fail(403, 'Not allowed');
+    const [departments, programmes, sections, subjects, staffRows, allot, counts] = await env.DB.batch([
+      env.DB.prepare('SELECT id, name FROM departments WHERE institute_id = ? ORDER BY name').bind(inst),
+      env.DB.prepare(`SELECT p.id, p.name, p.department_id, d.name AS department FROM programmes p LEFT JOIN departments d ON d.id = p.department_id
+        WHERE p.institute_id = ? ORDER BY p.name`).bind(inst),
+      env.DB.prepare(`SELECT s.id, s.name, s.programme, s.programme_id, s.semester, s.department_id, s.coordinator_id, d.name AS department,
+          c.name AS coordinator, (SELECT COUNT(*) FROM users WHERE section_id = s.id AND role = 'student' AND status = 'active') AS students
+        FROM sections s LEFT JOIN departments d ON d.id = s.department_id LEFT JOIN users c ON c.id = s.coordinator_id
+        WHERE s.institute_id = ? ORDER BY s.name`).bind(inst),
+      env.DB.prepare(`SELECT s.id, s.code, s.name, s.semester, s.type, s.elective_group, s.credits, s.cos_json, s.department_id, s.programme_id,
+          d.name AS department, p.name AS programme
+        FROM subjects s LEFT JOIN departments d ON d.id = s.department_id LEFT JOIN programmes p ON p.id = s.programme_id
+        WHERE s.institute_id = ? ORDER BY s.semester, s.code`).bind(inst),
+      env.DB.prepare(`SELECT u.id, u.name, u.username, u.emp_id, u.designation, u.post, u.role, u.email, u.mobile, u.department_id, d.name AS department
+        FROM users u LEFT JOIN departments d ON d.id = u.department_id
+        WHERE u.institute_id = ? AND u.role != 'student' ORDER BY d.name, u.name`).bind(inst),
+      env.DB.prepare(`SELECT a.id, a.subject_id, a.section_id, a.faculty_id, sb.code, sb.name AS subject, sc.name AS section, f.name AS faculty
+        FROM allotments a JOIN subjects sb ON sb.id = a.subject_id JOIN sections sc ON sc.id = a.section_id JOIN users f ON f.id = a.faculty_id
+        WHERE a.institute_id = ? ORDER BY sc.name, sb.code`).bind(inst),
+      env.DB.prepare(`SELECT COUNT(*) AS n FROM users WHERE institute_id = ? AND role = 'student' AND status = 'active'`).bind(inst),
+    ]);
+    const st = await settingsRow();
+    return json({
+      departments: departments.results,
+      programmes: programmes.results,
+      sections: sections.results,
+      subjects: subjects.results.map((x) => ({ ...x, cos: JSON.parse(x.cos_json || '[]'), cos_json: undefined })),
+      staff: staffRows.results.map((x) => ({ ...x, post: x.post || (x.role === 'admin' ? 'admin' : x.role === 'hod' ? 'hod' : x.role === 'nodal' ? 'nodal' : 'faculty'), self: x.id === user.id })),
+      allotments: allot.results,
+      students: counts.results[0].n,
+      has_first_password: !!st.default_password,
+      posts: Object.fromEntries(Object.entries(POSTS).map(([k, v]) => [k, v.label])),
+    });
+  }
+
+  // programmes
+  if (route('POST', /^\/api\/setup\/programmes$/)) {
+    admin();
+    const b = await body(request);
+    await unique(`Programme "${b.name}"`, () => env.DB.prepare('INSERT INTO programmes (institute_id, department_id, name) VALUES (?,?,?)')
+      .bind(inst, null, str(b.name, 'Programme name', 120)).run().then(async (r) => {
+        const d = b.department_id ? await env.DB.prepare('SELECT id FROM departments WHERE id = ? AND institute_id = ?').bind(+b.department_id, inst).first() : null;
+        if (d) await env.DB.prepare('UPDATE programmes SET department_id = ? WHERE id = ?').bind(d.id, r.meta.last_row_id).run();
+      }));
+    return json({ ok: true });
+  }
+  if ((m = route('DELETE', /^\/api\/setup\/programmes\/(\d+)$/))) {
+    admin();
+    const used = await env.DB.prepare('SELECT (SELECT COUNT(*) FROM sections WHERE programme_id = ?1) + (SELECT COUNT(*) FROM subjects WHERE programme_id = ?1) AS n').bind(+m[1]).first();
+    if (used.n) fail(409, 'Sections or subjects still use this programme.');
+    await env.DB.prepare('DELETE FROM programmes WHERE id = ? AND institute_id = ?').bind(+m[1], inst).run();
+    return json({ ok: true });
+  }
+
+  // sections with programme, semester and class coordinator
+  const sectionBody = async (b) => {
+    const prog = b.programme_id ? await env.DB.prepare('SELECT id, name, department_id FROM programmes WHERE id = ? AND institute_id = ?').bind(+b.programme_id, inst).first() : null;
+    if (!prog) fail(400, 'Choose a programme');
+    const sem = Number(b.semester);
+    if (!(Number.isInteger(sem) && sem >= 1 && sem <= 12)) fail(400, 'Semester must be 1-12');
+    let coord = null;
+    if (b.coordinator_id) {
+      const c = await env.DB.prepare(`SELECT id FROM users WHERE id = ? AND institute_id = ? AND role != 'student'`).bind(+b.coordinator_id, inst).first();
+      coord = c ? c.id : fail(400, 'Unknown class coordinator');
+    }
+    return { name: str(b.name, 'Section name', 80), prog, sem, coord };
+  };
+  if (route('POST', /^\/api\/setup\/sections$/)) {
+    admin();
+    const f = await sectionBody(await body(request));
+    await unique(`Section "${f.name}"`, () => env.DB.prepare(
+      'INSERT INTO sections (institute_id, department_id, programme, programme_id, semester, coordinator_id, name) VALUES (?,?,?,?,?,?,?)',
+    ).bind(inst, f.prog.department_id, f.prog.name, f.prog.id, f.sem, f.coord, f.name).run());
+    return json({ ok: true });
+  }
+  if ((m = route('PUT', /^\/api\/setup\/sections\/(\d+)$/))) {
+    admin();
+    const f = await sectionBody(await body(request));
+    await unique(`Section "${f.name}"`, () => env.DB.prepare(
+      'UPDATE sections SET department_id = ?, programme = ?, programme_id = ?, semester = ?, coordinator_id = ?, name = ? WHERE id = ? AND institute_id = ?',
+    ).bind(f.prog.department_id, f.prog.name, f.prog.id, f.sem, f.coord, f.name, +m[1], inst).run());
+    return json({ ok: true });
+  }
+
+  // one faculty row: role (post), department, designation
+  if ((m = route('PUT', /^\/api\/setup\/staff\/(\d+)$/))) {
+    admin();
+    const b = await body(request);
+    const t = await env.DB.prepare(`SELECT id, role FROM users WHERE id = ? AND institute_id = ? AND role != 'student'`).bind(+m[1], inst).first();
+    if (!t) fail(404, 'Staff member not found');
+    if (t.role === 'admin') fail(400, 'The institute admin account is changed under its own settings');
+    const post = postOf(b.post) || fail(400, 'Unknown role');
+    const d = b.department_id ? await env.DB.prepare('SELECT id FROM departments WHERE id = ? AND institute_id = ?').bind(+b.department_id, inst).first() : null;
+    await env.DB.prepare('UPDATE users SET name = ?, designation = ?, post = ?, role = ?, perms = ?, department_id = ?, email = ?, mobile = ? WHERE id = ?')
+      .bind(str(b.name, 'Name', 100), txt(b.designation, 80), post, POSTS[post].role, JSON.stringify(cleanPerms(POSTS[post].role, POSTS[post].perms)),
+        d ? d.id : null, txt(b.email, 150), txt(b.mobile, 20), t.id).run();
+    await audit('staff updated', `${b.name}: ${POSTS[post].label}`);
+    return json({ ok: true });
+  }
+
+  // allotment: one row per subject and section
+  if (route('POST', /^\/api\/setup\/allotments$/)) {
+    admin();
+    const b = await body(request);
+    const [sb, sc, f] = await Promise.all([
+      env.DB.prepare('SELECT id FROM subjects WHERE id = ? AND institute_id = ?').bind(+b.subject_id || 0, inst).first(),
+      env.DB.prepare('SELECT id FROM sections WHERE id = ? AND institute_id = ?').bind(+b.section_id || 0, inst).first(),
+      env.DB.prepare(`SELECT id FROM users WHERE id = ? AND institute_id = ? AND role IN ('faculty','hod','nodal')`).bind(+b.faculty_id || 0, inst).first(),
+    ]);
+    if (!sb || !sc || !f) fail(400, 'Choose a subject, a section and a faculty member');
+    await env.DB.prepare(`INSERT INTO allotments (institute_id, subject_id, section_id, faculty_id) VALUES (?,?,?,?)
+      ON CONFLICT (subject_id, section_id) DO UPDATE SET faculty_id = excluded.faculty_id`).bind(inst, sb.id, sc.id, f.id).run();
+    return json({ ok: true });
+  }
+  if ((m = route('DELETE', /^\/api\/setup\/allotments\/(\d+)$/))) {
+    admin();
+    await env.DB.prepare('DELETE FROM allotments WHERE id = ? AND institute_id = ?').bind(+m[1], inst).run();
+    return json({ ok: true });
+  }
+
+  // ----- Excel imports: the browser sends the rows; ?commit=1 applies the valid ones, otherwise it is a preview -----
+  if ((m = route('POST', /^\/api\/import\/(subjects|faculty|allotment|students|electives)$/))) {
+    const kind = m[1];
+    if (kind === 'students' || kind === 'electives') canStudents(); else admin();
+    const b = await body(request);
+    const rows = Array.isArray(b.rows) ? b.rows : fail(400, 'No rows');
+    if (!rows.length) fail(400, 'The file has no data rows');
+    if (rows.length > 400) fail(400, 'At most 400 rows per file. Split the list.');
+    const commit = url.searchParams.get('commit') === '1';
+    const plan = await planImport(kind, rows);
+    if (commit) {
+      const ok = plan.items.filter((x) => x.action === 'new' || x.action === 'update');
+      for (const it of ok) await it.apply();
+      await audit(`${kind} imported`, `${plan.summary.new} new, ${plan.summary.update} updated, ${plan.summary.error} rows skipped`);
+    }
+    return json({ committed: commit, summary: plan.summary, rows: plan.items.map(({ apply, ...r }) => r) });
+  }
+
+  async function planImport(kind, rows) {
+    const items = [];
+    const seen = new Set();
+    const push = (n, key, action, extra = {}) => items.push({ n, key, action, ...extra });
+    const err = (n, key, error) => push(n, key, 'error', { error });
+    const [deps, progs, secs, subs, staffList] = (await env.DB.batch([
+      env.DB.prepare('SELECT id, name FROM departments WHERE institute_id = ?').bind(inst),
+      env.DB.prepare('SELECT id, name, department_id FROM programmes WHERE institute_id = ?').bind(inst),
+      env.DB.prepare('SELECT id, name, semester, programme_id FROM sections WHERE institute_id = ?').bind(inst),
+      env.DB.prepare('SELECT id, code, name, semester, type, elective_group, credits, cos_json, department_id, programme_id FROM subjects WHERE institute_id = ?').bind(inst),
+      env.DB.prepare(`SELECT id, emp_id, username, name, role, post, designation, department_id, email, mobile FROM users WHERE institute_id = ? AND role != 'student'`).bind(inst),
+    ])).map((r) => r.results);
+    const byName = (list, v) => list.find((x) => low(x.name) === low(v));
+    let before = 0;
+
+    if (kind === 'subjects') {
+      before = subs.length;
+      const newProgs = new Map();
+      for (const [i, r] of rows.entries()) {
+        const n = i + 2; // row number in the sheet (row 1 is the header)
+        const code = txt(r.code, 30);
+        if (!code) { err(n, '', 'Subject code is missing'); continue; }
+        if (seen.has(low(code))) { err(n, code, 'This code appears twice in the file'); continue; }
+        seen.add(low(code));
+        const name = txt(r.subjectname, 150);
+        if (!name) { err(n, code, 'Subject name is missing'); continue; }
+        const dep = byName(deps, r.department);
+        if (!dep) { err(n, code, `Department "${txt(r.department)}" is not in Institute setup → Departments`); continue; }
+        const sem = Number(r.semester);
+        if (!(Number.isInteger(sem) && sem >= 1 && sem <= 12)) { err(n, code, 'Semester must be 1 to 12'); continue; }
+        const type = ['theory', 'lab', 'elective'].includes(low(r.type)) ? low(r.type)[0].toUpperCase() + low(r.type).slice(1) : (r.type ? null : 'Theory');
+        if (!type) { err(n, code, 'Type must be Theory, Lab or Elective'); continue; }
+        const cos = [];
+        let bad = '';
+        for (let k = 1; k <= 8; k++) {
+          const t = txt(r['co' + k], 600);
+          if (!t) continue;
+          const lv = rbtlOf(r['co' + k + 'level']);
+          if (!lv) { bad = `CO${k} level must be 1-6 or Remember … Create`; break; }
+          cos.push({ co: 'CO' + k, text: t, rbtl: lv });
+        }
+        if (bad) { err(n, code, bad); continue; }
+        if (!cos.length) { err(n, code, 'Give at least CO1 and its level'); continue; }
+        const progName = txt(r.programme, 120);
+        if (!progName) { err(n, code, 'Programme is missing'); continue; }
+        const credits = r.credits === '' || r.credits === undefined ? null : Number(r.credits);
+        const ex = subs.find((x) => low(x.code) === low(code));
+        const vals = { name, sem, type, group: txt(r.electivegroup, 40) || null, credits: Number.isFinite(credits) ? credits : null, cos: JSON.stringify(cos), dep: dep.id };
+        const progId = async () => {
+          const p0 = byName(progs, progName);
+          if (p0) return p0.id;
+          if (!newProgs.has(low(progName))) {
+            newProgs.set(low(progName), (async () => {
+              const r2 = await env.DB.prepare('INSERT INTO programmes (institute_id, department_id, name) VALUES (?,?,?)').bind(inst, dep.id, progName).run();
+              return r2.meta.last_row_id;
+            })());
+          }
+          return newProgs.get(low(progName));
+        };
+        const same = ex && ex.name === name && ex.semester === sem && ex.type === type && (ex.elective_group || null) === vals.group
+          && ex.credits === vals.credits && ex.cos_json === vals.cos && ex.department_id === dep.id && byName(progs, progName)?.id === ex.programme_id;
+        push(n, code, ex ? (same ? 'same' : 'update') : 'new', {
+          detail: `${name} · Sem ${sem} · ${type} · ${cos.length} COs${byName(progs, progName) ? '' : ` · new programme "${progName}"`}`,
+          apply: async () => {
+            const pid = await progId();
+            if (ex) {
+              await env.DB.prepare('UPDATE subjects SET name=?, semester=?, type=?, elective_group=?, credits=?, cos_json=?, department_id=?, programme_id=? WHERE id=?')
+                .bind(vals.name, vals.sem, vals.type, vals.group, vals.credits, vals.cos, vals.dep, pid, ex.id).run();
+            } else {
+              await env.DB.prepare('INSERT INTO subjects (institute_id, code, name, semester, type, elective_group, credits, cos_json, department_id, programme_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+                .bind(inst, code, vals.name, vals.sem, vals.type, vals.group, vals.credits, vals.cos, vals.dep, pid).run();
+            }
+          },
+        });
+      }
+    }
+
+    if (kind === 'faculty') {
+      before = staffList.filter((x) => x.role !== 'admin').length;
+      for (const [i, r] of rows.entries()) {
+        const n = i + 2;
+        const emp = txt(r.employeeid, 40);
+        if (!emp) { err(n, '', 'Employee ID is missing'); continue; }
+        if (!/^[A-Za-z0-9._-]+$/.test(emp)) { err(n, emp, 'Employee ID may have letters, digits, dot, dash and underscore only'); continue; }
+        if (seen.has(low(emp))) { err(n, emp, 'This employee ID appears twice in the file'); continue; }
+        seen.add(low(emp));
+        const name = txt(r.name, 100);
+        if (!name) { err(n, emp, 'Name is missing'); continue; }
+        const dep = byName(deps, r.department);
+        if (!dep) { err(n, emp, `Department "${txt(r.department)}" is not in Institute setup → Departments`); continue; }
+        const post = postOf(r.role);
+        if (!post) { err(n, emp, 'Role must be Faculty, HOD, Dean, Director, Registrar or Nodal'); continue; }
+        const ex = staffList.find((x) => low(x.emp_id) === low(emp) || low(x.username) === low(emp));
+        if (ex && ex.role === 'admin') { err(n, emp, 'This ID belongs to the institute admin account'); continue; }
+        const v = { name, dep: dep.id, desig: txt(r.designation, 80), post, email: txt(r.email, 150), mobile: txt(r.mobile, 20) };
+        const same = ex && ex.name === v.name && ex.department_id === v.dep && (ex.designation || '') === v.desig && (ex.post || 'faculty') === post
+          && (ex.email || '') === v.email && (ex.mobile || '') === v.mobile;
+        push(n, emp, ex ? (same ? 'same' : 'update') : 'new', {
+          detail: `${name} · ${dep.name} · ${v.desig || '—'} · ${POSTS[post].label}`,
+          apply: async () => {
+            const perms = JSON.stringify(cleanPerms(POSTS[post].role, POSTS[post].perms));
+            if (ex) {
+              await env.DB.prepare('UPDATE users SET name=?, department_id=?, designation=?, post=?, role=?, perms=?, email=?, mobile=?, emp_id=? WHERE id=?')
+                .bind(v.name, v.dep, v.desig, post, POSTS[post].role, perms, v.email, v.mobile, emp, ex.id).run();
+            } else {
+              const pw = await firstPassword();
+              await env.DB.prepare(`INSERT INTO users (institute_id, role, name, username, pw_hash, pw_salt, created_at, department_id, perms, must_change,
+                  emp_id, designation, post, email, mobile) VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)`)
+                .bind(inst, POSTS[post].role, v.name, low(emp), pw.hash, pw.salt, now(), v.dep, perms, emp, v.desig, post, v.email, v.mobile).run();
+            }
+          },
+        });
+      }
+      if (items.some((x) => x.action === 'new')) await firstPassword();
+    }
+
+    if (kind === 'allotment') {
+      const cur = (await env.DB.prepare('SELECT subject_id, section_id, faculty_id FROM allotments WHERE institute_id = ?').bind(inst).all()).results;
+      before = cur.length;
+      for (const [i, r] of rows.entries()) {
+        const n = i + 2;
+        const sb = subs.find((x) => low(x.code) === low(r.subjectcode));
+        const sc = byName(secs, r.section);
+        const f = staffList.find((x) => low(x.emp_id) === low(r.employeeid) || low(x.username) === low(r.employeeid));
+        const key = `${txt(r.subjectcode)} / ${txt(r.section)}`;
+        if (!sb) { err(n, key, `Subject code "${txt(r.subjectcode)}" is not in the scheme`); continue; }
+        if (!sc) { err(n, key, `Section "${txt(r.section)}" is not in Institute setup → Sections`); continue; }
+        if (!f || f.role === 'admin') { err(n, key, `Employee ID "${txt(r.employeeid)}" is not in the faculty list`); continue; }
+        if (seen.has(sb.id + ':' + sc.id)) { err(n, key, 'This subject and section appear twice in the file'); continue; }
+        seen.add(sb.id + ':' + sc.id);
+        const ex = cur.find((x) => x.subject_id === sb.id && x.section_id === sc.id);
+        push(n, key, ex ? (ex.faculty_id === f.id ? 'same' : 'update') : 'new', {
+          detail: `${sb.name} → ${f.name}`,
+          apply: () => env.DB.prepare(`INSERT INTO allotments (institute_id, subject_id, section_id, faculty_id) VALUES (?,?,?,?)
+            ON CONFLICT (subject_id, section_id) DO UPDATE SET faculty_id = excluded.faculty_id`).bind(inst, sb.id, sc.id, f.id).run(),
+        });
+      }
+    }
+
+    if (kind === 'students' || kind === 'electives') {
+      const studs = (await env.DB.prepare(`SELECT id, username, name, univ_roll, college_roll, roll_no, section_id, semester, email, mobile, status, programme_id
+        FROM users WHERE institute_id = ? AND role = 'student'`).bind(inst).all()).results;
+      const findStudent = (u, c) => studs.find((x) => (u && (low(x.univ_roll) === low(u) || low(x.username) === low(u)))
+        || (c && (low(x.college_roll) === low(c) || low(x.roll_no) === low(c))));
+
+      if (kind === 'electives') {
+        before = (await env.DB.prepare('SELECT COUNT(*) AS n FROM elective_choices WHERE institute_id = ?').bind(inst).first()).n;
+        for (const [i, r] of rows.entries()) {
+          const n = i + 2;
+          const roll = txt(r.rollno, 40);
+          const st = findStudent(roll, roll);
+          const sb = subs.find((x) => low(x.code) === low(r.subjectcode));
+          const key = `${roll} / ${txt(r.subjectcode)}`;
+          if (!st) { err(n, key, `No student with roll no "${roll}"`); continue; }
+          if (!sb) { err(n, key, `Subject code "${txt(r.subjectcode)}" is not in the scheme`); continue; }
+          if (sb.type !== 'Elective') { err(n, key, `${sb.code} is not marked as an elective in the scheme`); continue; }
+          if (seen.has(st.id + ':' + sb.id)) { err(n, key, 'Appears twice in the file'); continue; }
+          seen.add(st.id + ':' + sb.id);
+          const ex = await env.DB.prepare('SELECT 1 FROM elective_choices WHERE student_id = ? AND subject_id = ?').bind(st.id, sb.id).first();
+          push(n, key, ex ? 'same' : 'new', {
+            detail: `${st.name} → ${sb.name}`,
+            apply: () => env.DB.prepare('INSERT OR IGNORE INTO elective_choices (institute_id, student_id, subject_id) VALUES (?,?,?)').bind(inst, st.id, sb.id).run(),
+          });
+        }
+      } else {
+        const touched = new Set();
+        for (const [i, r] of rows.entries()) {
+          const n = i + 2;
+          const u = txt(r.universityrollno, 40);
+          const c = txt(r.collegerollno, 40);
+          const key = u || c;
+          if (!key) { err(n, '', 'Give the university roll no or the college roll no'); continue; }
+          if ((u && seen.has('u' + low(u))) || (c && seen.has('c' + low(c)))) { err(n, key, 'This roll no appears twice in the file'); continue; }
+          if (u) seen.add('u' + low(u));
+          if (c) seen.add('c' + low(c));
+          const name = txt(r.name, 100);
+          if (!name) { err(n, key, 'Name is missing'); continue; }
+          const sc = byName(secs, r.section);
+          if (!sc) { err(n, key, `Section "${txt(r.section)}" is not in Institute setup → Sections`); continue; }
+          const sem = r.semester === '' || r.semester === undefined ? sc.semester : Number(r.semester);
+          if (!(Number.isInteger(sem) && sem >= 1 && sem <= 12)) { err(n, key, 'Semester must be 1 to 12'); continue; }
+          const email = txt(r.email, 150);
+          if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { err(n, key, 'Email is not valid'); continue; }
+          const ex = findStudent(u, c);
+          // Sections are frozen after the first year; marks always stay with the paper.
+          if (ex && ex.section_id !== sc.id && (ex.semester || sem) > 2) { err(n, key, 'Section can be changed only in the first year'); continue; }
+          const uname = low(u || c);
+          if (!ex && studs.some((x) => low(x.username) === uname)) { err(n, key, 'This roll no is already used as a username'); continue; }
+          touched.add(sc.id);
+          if (ex) touched.add(ex.section_id);
+          const v = { name, u: u || ex?.univ_roll || null, c: c || ex?.college_roll || null, sc: sc.id, sem, prog: sc.programme_id, email, mobile: txt(r.mobile, 20) };
+          const same = ex && ex.name === v.name && (ex.univ_roll || null) === v.u && (ex.college_roll || null) === v.c && ex.section_id === v.sc
+            && ex.semester === v.sem && (ex.email || '') === v.email && (ex.mobile || '') === v.mobile;
+          push(n, key, ex ? (same ? 'same' : 'update') : 'new', {
+            detail: `${name} · ${sc.name} · Sem ${sem}${ex && ex.section_id !== sc.id ? ' · section changes' : ''}`,
+            apply: async () => {
+              if (ex) {
+                // When the university roll no arrives later, it becomes the username (if free).
+                const nu = v.u && low(ex.username) !== low(v.u) && !studs.some((x) => x.id !== ex.id && low(x.username) === low(v.u)) ? low(v.u) : ex.username;
+                await env.DB.prepare('UPDATE users SET name=?, univ_roll=?, college_roll=?, roll_no=?, section_id=?, semester=?, programme_id=?, email=?, mobile=?, username=? WHERE id=?')
+                  .bind(v.name, v.u, v.c, v.c || v.u, v.sc, v.sem, v.prog, v.email, v.mobile, nu, ex.id).run();
+              } else {
+                const pw = await firstPassword();
+                await env.DB.prepare(`INSERT INTO users (institute_id, role, name, username, roll_no, pw_hash, pw_salt, created_at, section_id, must_change,
+                    univ_roll, college_roll, email, mobile, programme_id, semester, status) VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,'active')`)
+                  .bind(inst, 'student', v.name, uname, v.c || v.u, pw.hash, pw.salt, now(), v.sc, v.u, v.c, v.email, v.mobile, v.prog, v.sem).run();
+              }
+            },
+          });
+        }
+        if (items.some((x) => x.action === 'new')) await firstPassword();
+        before = studs.filter((x) => touched.has(x.section_id) && x.status === 'active').length;
+      }
+    }
+
+    const count = (a) => items.filter((x) => x.action === a).length;
+    const summary = { before, new: count('new'), update: count('update'), same: count('same'), error: count('error') };
+    summary.after = before + summary.new;
+    return { items, summary };
+  }
+
+  // ----- registrar: students -----
+  if (route('GET', /^\/api\/students$/)) {
+    const sec = Number(url.searchParams.get('section')) || 0;
+    const mine = await env.DB.prepare('SELECT id FROM sections WHERE id = ? AND coordinator_id = ? AND institute_id = ?').bind(sec, user.id, inst).first();
+    if (!mine) canStudents();
+    const { results } = await env.DB.prepare(`SELECT u.id, u.name, u.username, u.univ_roll, u.college_roll, u.semester, u.email, u.mobile, u.status, u.must_change,
+        u.section_id, s.name AS section,
+        (SELECT COUNT(*) FROM reset_requests r WHERE r.student_id = u.id AND r.status = 'open') AS reset_open
+      FROM users u LEFT JOIN sections s ON s.id = u.section_id
+      WHERE u.institute_id = ? AND u.role = 'student' ${sec ? 'AND u.section_id = ?' : ''} ORDER BY s.name, COALESCE(u.college_roll, u.univ_roll), u.name LIMIT 2000`)
+      .bind(...(sec ? [inst, sec] : [inst])).all();
+    return json(results);
+  }
+  if (route('POST', /^\/api\/students$/)) {
+    canStudents();
+    const b = await body(request);
+    const plan = await planImport('students', [b]);
+    const it = plan.items[0];
+    if (it.action === 'error') fail(400, it.error);
+    if (it.action !== 'new') fail(409, 'A student with this roll no already exists. Edit that student instead.');
+    await it.apply();
+    await audit('student added', `${b.name} (${it.key})`);
+    return json({ ok: true });
+  }
+  if ((m = route('PUT', /^\/api\/students\/(\d+)$/))) {
+    canStudents();
+    const b = await body(request);
+    const t = await env.DB.prepare(`SELECT id, univ_roll, college_roll FROM users WHERE id = ? AND institute_id = ? AND role = 'student'`).bind(+m[1], inst).first();
+    if (!t) fail(404, 'Student not found');
+    const plan = await planImport('students', [{ ...b, universityrollno: b.universityrollno ?? t.univ_roll, collegerollno: b.collegerollno ?? t.college_roll }]);
+    const it = plan.items[0];
+    if (it.action === 'error') fail(400, it.error);
+    if (it.action === 'update') await it.apply();
+    if (['active', 'detained', 'left'].includes(b.status)) await env.DB.prepare('UPDATE users SET status = ? WHERE id = ?').bind(b.status, t.id).run();
+    await audit('student updated', `${b.name || t.id}`);
+    return json({ ok: true });
+  }
+  // Promotion: every active student of a section moves to the next section (detained and left students stay).
+  if (route('POST', /^\/api\/students\/promote$/)) {
+    canStudents();
+    const b = await body(request);
+    const [from, to] = await Promise.all([
+      env.DB.prepare('SELECT id, name, semester FROM sections WHERE id = ? AND institute_id = ?').bind(+b.from || 0, inst).first(),
+      env.DB.prepare('SELECT id, name, semester, programme_id FROM sections WHERE id = ? AND institute_id = ?').bind(+b.to || 0, inst).first(),
+    ]);
+    if (!from || !to || from.id === to.id) fail(400, 'Choose two different sections');
+    const r = await env.DB.prepare(`UPDATE users SET section_id = ?, semester = ?, programme_id = COALESCE(?, programme_id)
+      WHERE section_id = ? AND institute_id = ? AND role = 'student' AND status = 'active'`).bind(to.id, to.semester, to.programme_id, from.id, inst).run();
+    await audit('students promoted', `${r.meta.changes} from ${from.name} to ${to.name}`);
+    return json({ moved: r.meta.changes });
+  }
+  // Password reset to the institute's first password: registrar, admin, or the class coordinator of the student's section.
+  if ((m = route('POST', /^\/api\/students\/(\d+)\/reset$/))) {
+    const t = await env.DB.prepare(`SELECT u.id, u.name, s.coordinator_id FROM users u LEFT JOIN sections s ON s.id = u.section_id
+      WHERE u.id = ? AND u.institute_id = ? AND u.role = 'student'`).bind(+m[1], inst).first();
+    if (!t) fail(404, 'Student not found');
+    if (t.coordinator_id !== user.id) canStudents();
+    const pw = await firstPassword();
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET pw_hash = ?, pw_salt = ?, must_change = 1 WHERE id = ?').bind(pw.hash, pw.salt, t.id),
+      env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(t.id),
+      env.DB.prepare(`UPDATE reset_requests SET status = 'done', done_by = ?, done_at = ? WHERE student_id = ? AND status = 'open'`).bind(user.name, now(), t.id),
+    ]);
+    await audit('student password reset', t.name);
+    return json({ ok: true });
+  }
+
+  // ----- HOD: DQAC committee of the department -----
+  if (route('GET', /^\/api\/dqac$/)) {
+    if (user.role !== 'hod' || !user.department_id) fail(403, 'Only a head of department sets the DQAC');
+    const [members, faculty] = await env.DB.batch([
+      env.DB.prepare(`SELECT q.user_id, q.position, u.name, u.designation FROM dqac q JOIN users u ON u.id = q.user_id WHERE q.department_id = ? ORDER BY q.position, u.name`).bind(user.department_id),
+      env.DB.prepare(`SELECT id, name, designation FROM users WHERE department_id = ? AND institute_id = ? AND role IN ('faculty','hod','nodal') ORDER BY name`).bind(user.department_id, inst),
+    ]);
+    return json({ members: members.results, faculty: faculty.results });
+  }
+  if (route('PUT', /^\/api\/dqac$/)) {
+    if (user.role !== 'hod' || !user.department_id) fail(403, 'Only a head of department sets the DQAC');
+    const b = await body(request);
+    const list = Array.isArray(b.members) ? b.members : [];
+    const ids = (await env.DB.prepare(`SELECT id FROM users WHERE department_id = ? AND institute_id = ? AND role IN ('faculty','hod','nodal')`).bind(user.department_id, inst).all()).results.map((x) => x.id);
+    const clean = list.filter((x) => ids.includes(+x.user_id)).map((x) => ({ id: +x.user_id, pos: x.position === 'coordinator' ? 'coordinator' : 'member' }));
+    if (clean.filter((x) => x.pos === 'coordinator').length > 1) fail(400, 'Choose one DQAC coordinator');
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM dqac WHERE department_id = ?').bind(user.department_id),
+      ...clean.map((x) => env.DB.prepare('INSERT INTO dqac (institute_id, department_id, user_id, position) VALUES (?,?,?,?)').bind(inst, user.department_id, x.id, x.pos)),
+    ]);
+    await audit('DQAC updated', `${clean.length} member(s)`);
+    return json({ ok: true });
+  }
+
+  // ----- class coordinator: open "forgot password" requests -----
+  if (route('GET', /^\/api\/reset-requests$/)) {
+    staff();
+    const { results } = await env.DB.prepare(`SELECT r.id, r.created_at, u.id AS student_id, u.name, u.username, s.name AS section
+      FROM reset_requests r JOIN users u ON u.id = r.student_id LEFT JOIN sections s ON s.id = u.section_id
+      WHERE r.institute_id = ? AND r.status = 'open' AND (s.coordinator_id = ? OR ?) ORDER BY r.id`)
+      .bind(inst, user.id, user.perms.students || user.perms.manage ? 1 : 0).all();
+    return json(results);
   }
 
   // ----- master data for the assessment form -----

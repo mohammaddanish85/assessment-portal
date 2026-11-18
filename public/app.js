@@ -93,7 +93,7 @@ function drawNav() {
   const p = user.perms || {};
   const links = user.role === 'owner' ? '<a href="#/">Institutes and requests</a>'
     : user.role === 'student' ? '<a href="#/">My assessments</a>'
-    : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}<a href="#/list">Assessments</a>${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
+    : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}${p.students || p.manage ? '<a href="#/students">Students</a>' : ''}${(user.coordinates || []).length ? '<a href="#/my-section">My section</a>' : ''}${user.role === 'hod' ? '<a href="#/dqac">DQAC</a>' : ''}${p.create || p.reports !== 'own' ? '<a href="#/list">Assessments</a>' : ''}${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
   nav.innerHTML = `${user.must_change ? '' : links}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
   document.getElementById('logout').onclick = act(async () => {
     await api('POST', '/logout');
@@ -277,243 +277,6 @@ async function viewFacultyHome() {
     ${provider === 'mock' ? '<div class="note warn"><b>Mock scorer is active.</b> Marks shown are dummy keyword counts, not real evaluation.</div>' : ''}
     <div class="card">${list.length ? `<table><thead><tr><th>Assessment</th><th>Status</th><th>Result release</th><th>Submitted</th><th>Results out</th></tr></thead><tbody>${rows}</tbody></table>`
       : '<p class="muted">No assessments yet.</p>'}</div>`;
-}
-
-const ROLE_NAMES = { admin: 'Institute admin', nodal: 'Nodal officer', hod: 'Head of department', faculty: 'Faculty' };
-const ROLE_RIGHTS = {
-  admin: { manage: true, create: false, approve: false, reports: 'institute' },
-  nodal: { manage: false, create: false, approve: false, reports: 'institute' },
-  hod: { manage: false, create: true, approve: true, reports: 'department' },
-  faculty: { manage: false, create: true, approve: true, reports: 'own' },
-};
-const REPORT_NAMES = { own: 'Own assessments', department: 'Whole department', institute: 'Whole institute' };
-const rightsText = (p) => [p.manage && 'Manage institute', p.create && 'Create assessments', p.approve && 'Approve results', `Reports: ${REPORT_NAMES[p.reports].toLowerCase()}`].filter(Boolean).join(', ');
-
-// Reads "a, b, c" lines (typed, or from a CSV file) into objects; a header line starting with the first column name is skipped.
-function parseLines(text, columns) {
-  return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-    .filter((l, i) => !(i === 0 && l.toLowerCase().replace(/[^a-z,]/g, '').startsWith(columns[0].replace(/[^a-z]/g, ''))))
-    .map((l, i) => {
-      const p = l.split(',').map((x) => x.trim().replace(/^"|"$/g, ''));
-      if (p.length !== columns.length || p.some((x) => !x)) throw new Error(`Line ${i + 1}: need ${columns.join(', ')}`);
-      return Object.fromEntries(columns.map((c, k) => [c, p[k]]));
-    });
-}
-const csvPicker = (id, sample) => `<span class="small">or load a CSV file: <input type="file" accept=".csv,text/csv" data-csv="${id}" style="display:inline-block;width:auto">
-  <a download="template.csv" href="data:text/csv;charset=utf-8,${encodeURIComponent(sample)}">Download template</a></span>`;
-
-async function viewAdmin() {
-  const seq = nav_seq;
-  const [d, inst] = await Promise.all([api('GET', '/admin/data'), api('GET', '/settings')]);
-  if (seq !== nav_seq) return;
-  const table = (head, rows, empty) => rows.length
-    ? `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>` : `<p class="muted">${empty}</p>`;
-  const acts = (kind, x, withReset) => `<td class="right nowrap"><button type="button" class="ghost small" data-edit="${kind}:${x.id}">Edit</button>
-    ${withReset && !x.self ? `<button type="button" class="ghost small" data-reset="${x.id}">Reset password</button>` : ''}
-    ${x.self ? '' : `<button type="button" class="ghost small danger" data-del="${kind}:${x.id}">Delete</button>`}</td>`;
-  const deptOptions = (sel) => `<option value="">No department</option>${d.departments.map((x) => `<option value="${x.id}"${x.id === sel ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}`;
-  const sectionOptions = `<option value="">Choose section…</option>${d.sections.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}`;
-  let logo = inst.logo;
-  let lhead = inst.letterhead || '';
-  const F = inst.format || {};
-
-  app.innerHTML = `<h1>Institute setup</h1>
-    <p class="muted">Institute code for logging in: <b>${esc(inst.code)}</b>. Fill these in order; each step feeds the next.</p>
-    <div class="card"><h2>1. Institute profile <span class="muted small">(printed at the top of reports, question papers and answer sheets)</span></h2>
-      <form id="finst"><div class="row"><label style="flex:2 1 260px">Institute name<input name="institute" value="${esc(inst.institute)}" required></label>
-        <label style="flex:2 1 260px">Second line (address or affiliation)<input name="line" value="${esc(inst.line)}"></label></div>
-        <div class="row" style="align-items:center"><label>Logo (PNG or JPG, under 300 KB)<input type="file" id="logofile" accept="image/png,image/jpeg"></label>
-          <div id="logoprev" style="flex:0 0 auto"></div></div>
-        <label>Letterhead (header image of your official letterhead: PNG or JPG, full page width, under 700 KB)<input type="file" id="lhfile" accept="image/png,image/jpeg"></label>
-        <p class="muted small">Every question paper, answer key, answer sheet and report is printed under this letterhead. Without it, the logo and name above are used.</p>
-        <div id="lhprev"></div>
-        <h3>Question paper format <span class="muted small">(how your institute's papers are laid out)</span></h3>
-        <div class="row"><label>Taxonomy column on exam papers<input name="tax_exam" value="${esc(F.tax_exam || 'RBTL')}"></label>
-          <label>Shown as<select name="tax_exam_style"><option value="code"${F.tax_exam_style !== 'name' ? ' selected' : ''}>Code, e.g. RBTL-2</option><option value="name"${F.tax_exam_style === 'name' ? ' selected' : ''}>Level name, e.g. Understand</option></select></label>
-          <label>Code prefix<input name="tax_code" value="${esc(F.tax_code || 'RBTL')}" placeholder="RBTL"></label></div>
-        <div class="row"><label>Taxonomy column on assignments<input name="tax_asg" value="${esc(F.tax_asg || 'R. Bloom Taxonomy Level')}"></label>
-          <label>Shown as<select name="tax_asg_style"><option value="name"${F.tax_asg_style !== 'code' ? ' selected' : ''}>Level name, e.g. Analyse</option><option value="code"${F.tax_asg_style === 'code' ? ' selected' : ''}>Code, e.g. RBTL-4</option></select></label></div>
-        <div class="row"><label>Signature lines on exam papers (separate with |)<input name="sign_exam" value="${esc(F.sign_exam ?? 'Faculty Name and Sign. | HOD Sign.')}"></label>
-          <label>Signature lines on assignments (separate with |)<input name="sign_asg" value="${esc(F.sign_asg || '')}" placeholder="Leave empty for none"></label></div>
-        <label class="choice" style="max-width:360px"><input type="checkbox" name="roll"${F.roll === false ? '' : ' checked'}> Print "Roll No. ……" on exam papers</label>
-        <p><button>Save institute profile</button></p></form></div>
-
-    <div class="card"><h2>2. Departments (${d.departments.length})</h2>
-      <form id="fdep" class="row"><label style="flex:3 1 260px">Department name<input name="name" placeholder="Computer Science and Engineering" required></label><p><button>Add department</button></p></form>
-      ${table(['Department', ''], d.departments.map((x) => `<tr><td>${esc(x.name)}</td>${acts('departments', x)}</tr>`), 'No departments yet.')}</div>
-
-    <div class="card"><h2>3. Courses and sections (${d.sections.length})</h2>
-      <form id="fsec" class="row"><label style="flex:2 1 200px">Course / programme<input name="programme" placeholder="B.Tech CSE"></label>
-        <label style="flex:2 1 200px">Section name<input name="name" placeholder="B.Tech CSE Sem 5 - A" required></label>
-        <label>Department<select name="department_id">${deptOptions()}</select></label><p><button>Add section</button></p></form>
-      ${table(['Section', 'Course', 'Department', 'Students', ''], d.sections.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.programme) || '–'}</td><td>${esc(x.department ?? '–')}</td><td>${x.students}</td>${acts('sections', x)}</tr>`), 'No sections yet.')}</div>
-
-    <div class="card"><h2>4. Subjects (${d.subjects.length})</h2>
-      <form id="fsub" class="row"><label style="flex:3 1 220px">Subject name<input name="name" required></label><label>Subject code<input name="code" required></label>
-        <label>Semester (optional)<input name="semester" type="number" min="1" max="12"></label><p><button>Add subject</button></p></form>
-      ${table(['Code', 'Subject', 'Semester', ''], d.subjects.map((x) => `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${x.semester ?? '–'}</td>${acts('subjects', x)}</tr>`), 'No subjects yet.')}</div>
-
-    <div class="card"><h2>5. Staff and their rights (${d.staff.length})</h2>
-      <form id="fstaff"><div class="row"><label>Full name<input name="name" required></label><label>Username<input name="username" required autocomplete="off"></label>
-          <label>First password (min 6)<input name="password" minlength="6" required autocomplete="off"></label></div>
-        <div class="row"><label>Role<select name="role">${Object.entries(ROLE_NAMES).map(([k, v]) => `<option value="${k}"${k === 'faculty' ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
-          <label>Department<select name="department_id">${deptOptions()}</select></label>
-          <label>Can see reports of<select name="reports">${Object.entries(REPORT_NAMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label></div>
-        <div class="checks"><label class="choice"><input type="checkbox" name="create"> Create assessments</label>
-          <label class="choice"><input type="checkbox" name="approve"> Approve and moderate results</label>
-          <label class="choice"><input type="checkbox" name="manage"> Manage institute setup and accounts</label></div>
-        <p><button>Add staff member</button> <span class="muted small">Choosing a role fills in its usual rights; change the ticks to grant more or less.</span></p></form>
-      <details><summary class="small">Add several faculty at once</summary>
-        <form id="fbulk" style="margin-top:10px"><label>Department<select name="department_id">${deptOptions()}</select></label>
-          <label>One per line: <b>name, username, password</b> ${csvPicker('bulk', 'name,username,password\nFaculty Name,faculty1,first-password\n')}
-            <textarea name="lines" rows="4" required></textarea></label>
-          <p><button>Add as faculty</button> <span class="muted small">Each gets the usual faculty rights.</span></p></form></details>
-      ${table(['Name', 'Username', 'Role', 'Department', 'Rights', ''], d.staff.map((x) => `<tr><td>${esc(x.name)}${x.self ? ' <span class="pill">You</span>' : ''}</td><td>${esc(x.username)}</td>
-        <td>${ROLE_NAMES[x.role]}</td><td>${esc(x.department ?? '–')}</td><td class="small">${rightsText(x.perms)}</td>${acts('staff', x, true)}</tr>`), 'No staff yet.')}</div>
-
-    <div class="card"><h2>6. Students (${d.students.length})</h2>
-      <form id="fstu"><label>Section<select name="section_id" required>${sectionOptions}</select></label>
-        <label>One student per line: <b>roll no, name, username, password</b> ${csvPicker('stu', 'roll no,name,username,password\n101,Student Name,student101,first-password\n')}
-          <textarea name="lines" rows="5" placeholder="101, Student Name, student101, first-password" required></textarea></label>
-        <p><button>Add students</button> <span class="muted small">Every new account must choose its own password at first login.</span></p></form>
-      ${table(['Section', 'Roll no', 'Name', 'Username', ''], d.students.map((x) => `<tr><td>${esc(x.section ?? '–')}</td><td>${esc(x.roll_no)}</td><td>${esc(x.name)}</td><td>${esc(x.username)}</td>${acts('students', x, true)}</tr>`), 'No students yet.')}</div>
-
-    <div class="card"><h2>Activity log <span class="muted small">(latest 100)</span></h2>
-      ${table(['When', 'Who', 'What', 'Details'], d.audit.map((x) => `<tr><td class="nowrap">${fmt(x.at)}</td><td>${esc(x.user_name)}</td><td>${esc(x.action)}</td><td class="small">${esc(x.detail)}</td></tr>`), 'Nothing recorded yet.')}</div>`;
-
-  // institute profile
-  const prev = document.getElementById('logoprev');
-  const drawLogo = () => {
-    prev.innerHTML = logo ? `<img src="${esc(logo)}" alt="Logo" style="max-height:60px;max-width:160px"> <button type="button" class="ghost small" id="rmlogo">Remove logo</button>` : '<span class="muted small">No logo</span>';
-    const rm = document.getElementById('rmlogo');
-    if (rm) rm.onclick = () => { logo = ''; drawLogo(); };
-  };
-  drawLogo();
-  document.getElementById('logofile').onchange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!['image/png', 'image/jpeg'].includes(file.type)) return toast('Logo must be a PNG or JPG image', true);
-    if (file.size > 300 * 1024) return toast('Logo is too large (keep it under 300 KB)', true);
-    const reader = new FileReader();
-    reader.onload = () => { logo = reader.result; drawLogo(); };
-    reader.readAsDataURL(file);
-  };
-  const lhPrev = document.getElementById('lhprev');
-  const drawLh = () => {
-    lhPrev.innerHTML = lhead ? `<div class="lh-preview"><img src="${esc(lhead)}" alt="Letterhead"></div><button type="button" class="ghost small" id="rmlh">Remove letterhead</button>` : '<span class="muted small">No letterhead uploaded</span>';
-    const rm = document.getElementById('rmlh');
-    if (rm) rm.onclick = () => { lhead = ''; drawLh(); };
-  };
-  drawLh();
-  document.getElementById('lhfile').onchange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!['image/png', 'image/jpeg'].includes(file.type)) return toast('Letterhead must be a PNG or JPG image', true);
-    if (file.size > 700 * 1024) return toast('Letterhead image is too large (keep it under 700 KB)', true);
-    const reader = new FileReader();
-    reader.onload = () => { lhead = reader.result; drawLh(); };
-    reader.readAsDataURL(file);
-  };
-  document.getElementById('finst').onsubmit = act(async (e) => {
-    const g = e.target;
-    await api('POST', '/admin/settings', {
-      institute: g.institute.value, line: g.line.value, logo, letterhead: lhead,
-      format: { tax_exam: g.tax_exam.value, tax_exam_style: g.tax_exam_style.value, tax_code: g.tax_code.value, tax_asg: g.tax_asg.value,
-        tax_asg_style: g.tax_asg_style.value, sign_exam: g.sign_exam.value, sign_asg: g.sign_asg.value, roll: g.roll.checked },
-    });
-    user.institute_name = e.target.institute.value.trim();
-    drawNav();
-    toast('Institute profile saved');
-  });
-
-  // CSV files fill the box next to them
-  app.querySelectorAll('[data-csv]').forEach((inp) => (inp.onchange = async () => {
-    const file = inp.files[0];
-    if (file) inp.closest('form').lines.value = (await file.text()).replace(/^\ufeff/, '');
-  }));
-
-  // add
-  const post = (formId, path, build, done) => (document.getElementById(formId).onsubmit = act(async (e) => {
-    const r = await api('POST', path, build(e.target));
-    toast(done(r));
-    viewAdmin();
-  }));
-  const fields = (f) => Object.fromEntries(new FormData(f));
-  post('fdep', '/admin/departments', fields, () => 'Department added');
-  post('fsec', '/admin/sections', fields, () => 'Section added');
-  post('fsub', '/admin/subjects', fields, () => 'Subject added');
-  post('fstu', '/admin/students', (f) => ({ section_id: +f.section_id.value, students: parseLines(f.lines.value, ['roll_no', 'name', 'username', 'password']) }), (r) => `${r.added} student(s) added`);
-
-  const fstaff = document.getElementById('fstaff');
-  const applyRole = () => {
-    const r = ROLE_RIGHTS[fstaff.role.value];
-    fstaff.create.checked = r.create; fstaff.approve.checked = r.approve; fstaff.manage.checked = r.manage; fstaff.reports.value = r.reports;
-    fstaff.manage.disabled = fstaff.role.value === 'admin'; // an institute admin always has it
-  };
-  fstaff.role.onchange = applyRole;
-  applyRole();
-  const staffBody = (v) => ({ name: v.name, username: v.username, password: v.password, role: v.role, department_id: v.department_id || null,
-    perms: { manage: !!v.manage, create: !!v.create, approve: !!v.approve, reports: v.reports } });
-  post('fstaff', '/admin/staff', (f) => staffBody({ ...fields(f), manage: f.manage.checked, create: f.create.checked, approve: f.approve.checked }), () => 'Staff account created');
-
-  document.getElementById('fbulk').onsubmit = act(async (e) => {
-    const rows = parseLines(e.target.lines.value, ['name', 'username', 'password']);
-    let added = 0;
-    try {
-      for (const r of rows) {
-        await api('POST', '/admin/staff', { ...r, role: 'faculty', department_id: e.target.department_id.value || null, perms: ROLE_RIGHTS.faculty });
-        added++;
-      }
-    } catch (err) {
-      throw new Error(`${added} added, then line ${added + 1} failed: ${err.message}`);
-    } finally {
-      if (added) viewAdmin();
-    }
-    toast(`${added} faculty account(s) created`);
-  });
-
-  // edit, delete, reset password
-  const lists = { departments: d.departments, sections: d.sections, subjects: d.subjects, staff: d.staff, students: d.students };
-  const find = (kind, id) => lists[kind].find((x) => x.id === id);
-  const urlOf = (kind) => (kind === 'staff' || kind === 'students' ? 'users' : kind);
-  const deptField = (v) => ({ name: 'department_id', label: 'Department', value: v ?? '', options: [{ value: '', label: 'No department' }, ...d.departments.map((x) => ({ value: x.id, label: x.name }))] });
-  const editFields = {
-    departments: (x) => [{ name: 'name', label: 'Department name', value: x.name }],
-    sections: (x) => [{ name: 'name', label: 'Section name', value: x.name }, { name: 'programme', label: 'Course / programme', value: x.programme, optional: true }, deptField(x.department_id)],
-    subjects: (x) => [{ name: 'name', label: 'Subject name', value: x.name }, { name: 'code', label: 'Subject code', value: x.code },
-      { name: 'semester', label: 'Semester (optional)', value: x.semester ?? '', type: 'number', optional: true }],
-    staff: (x) => [{ name: 'name', label: 'Full name', value: x.name }, { name: 'username', label: 'Username', value: x.username },
-      { name: 'role', label: 'Role', value: x.role, options: Object.entries(ROLE_NAMES).map(([k, v]) => ({ value: k, label: v })) }, deptField(x.department_id),
-      { name: 'reports', label: 'Can see reports of', value: x.perms.reports, options: Object.entries(REPORT_NAMES).map(([k, v]) => ({ value: k, label: v })) },
-      { name: 'create', label: 'Create assessments', type: 'checkbox', value: x.perms.create },
-      { name: 'approve', label: 'Approve and moderate results', type: 'checkbox', value: x.perms.approve },
-      { name: 'manage', label: 'Manage institute setup and accounts', type: 'checkbox', value: x.perms.manage }],
-    students: (x) => [{ name: 'roll_no', label: 'Roll no', value: x.roll_no }, { name: 'name', label: 'Name', value: x.name }, { name: 'username', label: 'Username', value: x.username },
-      { name: 'section_id', label: 'Section', value: x.section_id ?? '', options: d.sections.map((sec) => ({ value: sec.id, label: sec.name })) }],
-  };
-  app.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = act(async () => {
-    const [kind, id] = b.dataset.edit.split(':');
-    const v = await ask('Edit details', { ok: 'Save', fields: editFields[kind](find(kind, +id)) });
-    if (!v) return;
-    await api('PUT', `/admin/${urlOf(kind)}/${id}`, kind === 'staff' ? staffBody(v) : v);
-    toast('Saved');
-    viewAdmin();
-  })));
-  app.querySelectorAll('[data-del]').forEach((b) => (b.onclick = act(async () => {
-    const [kind, id] = b.dataset.del.split(':');
-    const x = find(kind, +id);
-    if (!(await ask(`Delete "${x.name}"? This cannot be undone.`, { ok: 'Delete' }))) return;
-    await api('DELETE', `/admin/${urlOf(kind)}/${id}`);
-    toast('Deleted');
-    viewAdmin();
-  })));
-  app.querySelectorAll('[data-reset]').forEach((b) => (b.onclick = act(async () => {
-    const x = [...d.staff, ...d.students].find((u) => u.id === +b.dataset.reset);
-    const v = await ask(`New password for ${x.name} (minimum 6 characters). They must choose their own at next login.`, { ok: 'Reset password', fields: [{ name: 'password', label: 'New password', min: 6 }] });
-    if (!v) return;
-    await api('POST', `/admin/users/${x.id}/password`, { password: v.password });
-    toast('Password reset');
-  })));
 }
 
 // Best-of counting for parts with a choice ("attempt any 2 of 3"); same rule as the server.
@@ -1281,13 +1044,18 @@ async function route() {
       return await viewStudentHome();
     }
     const p = user.perms;
-    if (page === 'setup' && p.manage) return await viewAdmin();
+    if (page === 'setup' && p.manage) return await viewInstSetup(id || 'profile');
+    if (page === 'students' && (p.students || p.manage)) return await viewStudents(+id || 0);
+    if (page === 'my-section' && (user.coordinates || []).length) return await viewStudents(+id || 0);
+    if (page === 'dqac' && user.role === 'hod') return await viewDqac();
     if (page === 'new' && p.create) return id ? await viewNew(decodeURIComponent(id)) : viewChooseType();
     if (page === 'print' && id) return await viewPrint(id, +location.hash.split('/')[3]);
     if (page === 'a' && id) return await viewAssessment(+id);
     if (page === 'review' && id) return await viewReview(+id);
     if (page === 'list') return await viewFacultyHome();
-    return p.manage && !p.create ? await viewAdmin() : await viewFacultyHome();
+    if (p.manage && !p.create) return await viewInstSetup('profile');
+    if (p.students && !p.create) return await viewStudents(0);
+    return await viewFacultyHome();
   } catch (e) {
     app.innerHTML = `<div class="card"><h1>Something went wrong</h1><p>${esc(e.message)}</p><a class="btn" href="#/">Go back</a></div>`;
   }

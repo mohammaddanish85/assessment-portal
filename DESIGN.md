@@ -4,41 +4,41 @@ Agreed with Mohammad Danish, 18 Nov 2026. Each line is a requirement; tick it wh
 General rule: every rule has a sensible default, and the institute can change it in settings.
 
 ## 1. Look and feel
-- [ ] "Answer script" theme: ruled lines, red margin, roll-number boxes, three inks
+- [x] "Answer script" theme: ruled lines, red margin, roll-number boxes, three inks
       (graphite = AI, green = faculty, marker yellow = student; examiner red for marks).
-- [ ] Logo: open "C" with three dots meeting at a nexus. Wordmark COGNEXA.
+- [x] Logo: open "C" with three dots meeting at a nexus. Wordmark COGNEXA.
       Tagline "Beyond assessment. Towards learning." Philosophy "AI recommends. Faculty decides. Student learns."
 - [ ] Convocation (maroon + gold) kept as a possible second theme later.
 
 ## 2. Login
-- [ ] One login page; tabs Student / Faculty and staff / Institute admin change only the labels.
-- [ ] Institute code = AICTE ID (e.g. 1-7216281).
-- [ ] Student username = university roll no (college roll no if the university one is not issued yet).
-- [ ] Common first password set by the institute (e.g. EIT@12345); first login forces the student to set their own.
-- [ ] No self-service reset. "Forgot password" sends a request (email later) to the class coordinator;
+- [x] One login page; tabs Student / Faculty and staff / Institute admin change only the labels.
+- [x] Institute code = AICTE ID (e.g. 1-7216281).
+- [x] Student username = university roll no (college roll no if the university one is not issued yet).
+- [x] Common first password set by the institute (e.g. EIT@12345); first login forces the student to set their own.
+- [x] No self-service reset. "Forgot password" sends a request (email later) to the class coordinator;
       admin, registrar and class coordinator can all reset.
 - [ ] Desktop/laptop only for tests; mobile shows "take this test on a lab computer".
 
 ## 3. Roles
-- [ ] Admin: institute profile, letterhead, paper format, departments, programmes, scheme (subjects, COs, RBTL),
+- [x] Admin: institute profile, letterhead, paper format, departments, programmes, scheme (subjects, COs, RBTL),
       faculty list, sections, allotment. HOD cannot edit these.
-- [ ] Faculty list: employee ID, name, department, designation; role dropdown default Faculty,
+- [x] Faculty list: employee ID, name, department, designation; role dropdown default Faculty,
       can be HOD / Dean / Director / Registrar / Nodal (additional role, still teaches).
-- [ ] Registrar: all student data (upload, single add, edit details each semester, promotion, detained/left).
+- [x] Registrar: all student data (upload, single add, edit details each semester, promotion, detained/left).
       Upload = add new roll nos, update existing, no duplicates; summary "55 before, 6 added, 61 now";
       registrar approves the list. Student list is then visible to every department.
-- [ ] Section change allowed only in the first year; marks stay with the paper.
-- [ ] Class coordinator per section (set by admin): sees section students, resets passwords, sees missed tests.
-- [ ] HOD picks DQAC members from department faculty (can change any time) and assigns papers for review.
-- [ ] Allotment rows: faculty × subject × section (one faculty many sections; one subject different faculty per section).
+- [x] Section change allowed only in the first year; marks stay with the paper.
+- [x] Class coordinator per section (set by admin): sees section students, resets passwords, sees missed tests.
+- [x] HOD picks DQAC members from department faculty (can change any time). (Assigning papers for review: phase 3.)
+- [x] Allotment rows: faculty × subject × section (one faculty many sections; one subject different faculty per section).
 - [ ] HOD decides per subject who sets the paper and whether it is common or per section.
       Each section's faculty approves that section's answer scripts.
 
 ## 4. Academic structure
-- [ ] Academic session (e.g. 2026-27 Odd) at the top; scheme, sections, students belong to a session.
-- [ ] Scheme upload: subject code, name, semester, type (Theory/Lab/Elective + elective group), credits, COs with RBTL level.
-- [ ] Electives: default whole section; optional "elective choices" sheet (roll no, subject code) for split electives.
-- [ ] Promotion by registrar at session end (promote / detained / left).
+- [x] Academic session (e.g. 2026-27 Odd) at the top; scheme, sections, students belong to a session.
+- [x] Scheme upload: subject code, name, semester, type (Theory/Lab/Elective + elective group), credits, COs with RBTL level.
+- [x] Electives: default whole section; optional "elective choices" sheet (roll no, subject code) for split electives.
+- [x] Promotion by registrar at session end (promote / detained / left).
 
 ## 5. Faculty: creating a paper
 - [ ] Subject × section dropdown from allotment only; programme, semester, HOD, COs filled in.
