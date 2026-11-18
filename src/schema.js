@@ -15,6 +15,7 @@ export const SCHEMA = [
     name TEXT NOT NULL,
     line TEXT NOT NULL DEFAULT '',
     logo TEXT NOT NULL DEFAULT '',
+    letterhead TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
     created_at TEXT NOT NULL
   )`,
@@ -83,7 +84,8 @@ export const SCHEMA = [
     created_at TEXT NOT NULL,
     shuffle INTEGER NOT NULL DEFAULT 0,
     negative REAL NOT NULL DEFAULT 0,
-    option_shuffle INTEGER NOT NULL DEFAULT 0
+    option_shuffle INTEGER NOT NULL DEFAULT 0,
+    paper_json TEXT NOT NULL DEFAULT '{}'
   )`,
   `CREATE TABLE IF NOT EXISTS assessment_sections (
     assessment_id INTEGER NOT NULL,
@@ -102,7 +104,9 @@ export const SCHEMA = [
     kind TEXT NOT NULL DEFAULT 'descriptive',
     options_json TEXT,
     correct_index INTEGER,
-    part TEXT NOT NULL DEFAULT ''
+    part TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    rbtl INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,5 +197,9 @@ export async function prepareDatabase(db) {
   if (!a.has('negative')) add.push('ALTER TABLE assessments ADD COLUMN negative REAL NOT NULL DEFAULT 0');
   if (!a.has('option_shuffle')) add.push('ALTER TABLE assessments ADD COLUMN option_shuffle INTEGER NOT NULL DEFAULT 0');
   if (!q.has('part')) add.push("ALTER TABLE questions ADD COLUMN part TEXT NOT NULL DEFAULT ''");
+  if (!q.has('label')) add.push("ALTER TABLE questions ADD COLUMN label TEXT NOT NULL DEFAULT ''");
+  if (!q.has('rbtl')) add.push('ALTER TABLE questions ADD COLUMN rbtl INTEGER');
+  if (!a.has('paper_json')) add.push("ALTER TABLE assessments ADD COLUMN paper_json TEXT NOT NULL DEFAULT '{}'");
+  if (!(await cols('institutes')).has('letterhead')) add.push("ALTER TABLE institutes ADD COLUMN letterhead TEXT NOT NULL DEFAULT ''");
   if (add.length) await db.batch(add.map((x) => db.prepare(x)));
 }

@@ -271,6 +271,7 @@ async function viewAdmin() {
   const deptOptions = (sel) => `<option value="">No department</option>${d.departments.map((x) => `<option value="${x.id}"${x.id === sel ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}`;
   const sectionOptions = `<option value="">Choose section…</option>${d.sections.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}`;
   let logo = inst.logo;
+  let lhead = inst.letterhead || '';
 
   app.innerHTML = `<h1>Institute setup</h1>
     <p class="muted">Institute code for logging in: <b>${esc(inst.code)}</b>. Fill these in order; each step feeds the next.</p>
@@ -279,6 +280,9 @@ async function viewAdmin() {
         <label style="flex:2 1 260px">Second line (address or affiliation)<input name="line" value="${esc(inst.line)}"></label></div>
         <div class="row" style="align-items:center"><label>Logo (PNG or JPG, under 300 KB)<input type="file" id="logofile" accept="image/png,image/jpeg"></label>
           <div id="logoprev" style="flex:0 0 auto"></div></div>
+        <label>Letterhead (header image of your official letterhead: PNG or JPG, full page width, under 700 KB)<input type="file" id="lhfile" accept="image/png,image/jpeg"></label>
+        <p class="muted small">Every question paper, answer key, answer sheet and report is printed under this letterhead. Without it, the logo and name above are used.</p>
+        <div id="lhprev"></div>
         <p><button>Save institute profile</button></p></form></div>
 
     <div class="card"><h2>2. Departments (${d.departments.length})</h2>
@@ -341,8 +345,24 @@ async function viewAdmin() {
     reader.onload = () => { logo = reader.result; drawLogo(); };
     reader.readAsDataURL(file);
   };
+  const lhPrev = document.getElementById('lhprev');
+  const drawLh = () => {
+    lhPrev.innerHTML = lhead ? `<div class="lh-preview"><img src="${esc(lhead)}" alt="Letterhead"></div><button type="button" class="ghost small" id="rmlh">Remove letterhead</button>` : '<span class="muted small">No letterhead uploaded</span>';
+    const rm = document.getElementById('rmlh');
+    if (rm) rm.onclick = () => { lhead = ''; drawLh(); };
+  };
+  drawLh();
+  document.getElementById('lhfile').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!['image/png', 'image/jpeg'].includes(file.type)) return toast('Letterhead must be a PNG or JPG image', true);
+    if (file.size > 700 * 1024) return toast('Letterhead image is too large (keep it under 700 KB)', true);
+    const reader = new FileReader();
+    reader.onload = () => { lhead = reader.result; drawLh(); };
+    reader.readAsDataURL(file);
+  };
   document.getElementById('finst').onsubmit = act(async (e) => {
-    await api('POST', '/admin/settings', { institute: e.target.institute.value, line: e.target.line.value, logo });
+    await api('POST', '/admin/settings', { institute: e.target.institute.value, line: e.target.line.value, logo, letterhead: lhead });
     user.institute_name = e.target.institute.value.trim();
     drawNav();
     toast('Institute profile saved');
@@ -439,7 +459,7 @@ async function viewAdmin() {
 }
 
 // Question label, with the part for a Mid Term paper (e.g. "Part A · Q2").
-const qno = (q) => `${q.part ? `Part ${esc(q.part)} · ` : ''}Q${q.seq}`;
+const qno = (q) => `${q.part ? `Part ${esc(q.part)} · ` : ''}${q.label ? `Q ${esc(q.label)}` : `Q${q.seq}`}`;
 
 // The five assessment types. Each opens its own form with only the fields that type needs.
 const KINDS = {
@@ -494,8 +514,20 @@ async function viewNew(kind) {
       <p class="muted small">${relNote}</p>
       <label class="choice" style="max-width:460px"><input type="checkbox" name="shuffle"> Show the questions in a different order to each student</label>
       ${hasMcq ? `<label class="choice" style="max-width:460px"><input type="checkbox" name="option_shuffle"> Shuffle the MCQ options for each student</label>
-        <div class="row"><label>Negative marking for a wrong MCQ answer<select name="negative"><option value="0">None</option><option value="0.25">¼ of the question's marks</option><option value="0.33">⅓ of the question's marks</option><option value="0.5">½ of the question's marks</option><option value="1">Full marks of the question</option></select></label></div>
-        <p class="muted small">A skipped MCQ never loses marks.</p>` : ''}</div>
+        <div class="muted small" style="margin-top:8px">Marking scheme for MCQs</div>
+        <div class="checks"><label class="choice"><input type="radio" name="negmode" value="no" checked> Without negative marking</label>
+          <label class="choice"><input type="radio" name="negmode" value="yes"> With negative marking</label></div>
+        <div class="row" id="negrow" hidden><label>Marks deducted for a wrong answer<select name="negative"><option value="0.25">¼ of the question's marks</option><option value="0.33">⅓ of the question's marks</option><option value="0.5">½ of the question's marks</option><option value="1">Full marks of the question</option></select></label></div>
+        <p class="muted small" id="negnote" hidden>A skipped MCQ never loses marks. The rule is printed in the paper's instructions.</p>` : ''}</div>
+    <div class="card"><h2>Paper header <span class="muted small">(printed on the question paper in your institute's format)</span></h2>
+      ${isAsg ? `<div class="row"><label style="flex:2 1 260px">Semester line<input name="p_title" placeholder="Odd Semester 2026-27"></label><label>Session<input name="p_session" placeholder="2026-27"></label></div>
+        <div class="row"><label style="flex:2 1 260px">Program<input name="p_programme" placeholder="B. Tech (CSE-CS)"></label><label>Course units included<input name="p_units" placeholder="1, 2"></label></div>`
+      : `<div class="row"><label style="flex:2 1 260px">Paper title<input name="p_title"></label><label>Max marks on paper<input name="p_max" type="number" min="1" placeholder="Total of questions"></label></div>
+        <label>Programme and semester<input name="p_programme" placeholder="B. Tech (CSE – Cyber Security) 5th Semester"></label>
+        <label>Instructions (one per line)<textarea name="p_instructions" rows="3" placeholder="Question No. 1 is compulsory.&#10;Answer any two questions from PART-B."></textarea></label>
+        <p class="muted small">Set "Max marks on paper" only when students answer a choice of questions (e.g. any two from PART-B).</p>`}
+      <label>Course outcomes (one per line)<textarea name="p_cos" rows="3" placeholder="CO-1: Explain the fundamentals of …&#10;CO-2: Apply … techniques for …"></textarea></label>
+      ${isAsg ? '<label>Introduction / theme (optional, shown above the questions; **text** prints bold)<textarea name="p_intro" rows="3"></textarea></label>' : ''}</div>
     <div id="qs"></div>
     <p>${K.q === 'both' ? '<button type="button" class="ghost" data-add="mcq">+ Add MCQ</button> <button type="button" class="ghost" data-add="descriptive">+ Add written question</button>'
       : `<button type="button" class="ghost" data-add="${K.q}">+ Add question</button>`}</p>
@@ -523,12 +555,15 @@ async function viewNew(kind) {
     box.className = 'card q';
     box.dataset.kind = qk;
     const group = `opt${++optGroup}`;
-    const lastPart = qs.lastElementChild?.querySelector('[data-q=part]')?.value || 'A';
+    const lastPart = qs.lastElementChild?.querySelector('[data-q=part]')?.value ?? (isMid ? 'A' : '');
+    const rbtOpts = RBT.map((n, i) => (i ? `<option value="${i}">${isAsg ? n : `RBTL-${i} (${n})`}</option>` : '<option value="">Choose…</option>')).join('');
     box.innerHTML = `<div class="between"><h2 class="qn"></h2><button type="button" class="ghost small rm">Remove</button></div>
       <label>Question<textarea data-q="text" required></textarea></label>
-      <div class="row">${isMid ? `<label>Part<input data-q="part" value="${esc(lastPart)}" maxlength="20" required></label>` : ''}
-        <label>Max marks<input type="number" step="0.5" min="0.5" data-q="max_marks" required></label>
-        <label>CO${isMid ? '' : ' (optional)'}<input data-q="co" placeholder="CO1"${isMid ? ' required' : ''}></label></div>
+      <div class="row">${isAsg ? '' : `<label>Part${isMid ? '' : ' (optional)'}<input data-q="part" value="${esc(lastPart)}" maxlength="20" placeholder="A"${isMid ? ' required' : ''}></label>`}
+        <label>Q. No. on paper<input data-q="label" maxlength="12" placeholder="${isAsg ? 'Q1' : 'i. or 2.(a)'}"></label>
+        <label>Max marks<input type="number" step="0.5" min="0.5" data-q="max_marks" required></label></div>
+      <div class="row"><label>CO${isMid ? '' : ' (optional)'}<input data-q="co" placeholder="CO-1"${isMid ? ' required' : ''}></label>
+        <label>${isAsg ? 'R. Bloom Taxonomy Level' : 'RBTL'}<select data-q="rbtl">${rbtOpts}</select></label></div>
       ${qk === 'mcq' ? `<h3>Options <span class="muted small">(select the radio button of the correct option)</span></h3>
         <div class="opt"></div><button type="button" class="ghost small addo">+ Add option</button>`
       : `<label>Model answer / key points (never shown to students)<textarea data-q="model_answer" required></textarea></label>
@@ -550,7 +585,33 @@ async function viewNew(kind) {
   f.querySelectorAll('[data-add]').forEach((x) => (x.onclick = () => addQuestion(x.dataset.add)));
   if (K.q === 'both') { addQuestion('mcq'); addQuestion('descriptive'); } else addQuestion(K.q);
 
+  // Paper header: suggested title, and the last header used for this subject is filled back in.
+  const MONTH = new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  const ORD = ['', 'First', 'Second', 'Third', 'Fourth', 'Fifth'];
+  const suggest = () => (isAsg ? '' : T === 'Sessional' ? `${ORD[+f.number.value] || f.number.value} Sessional Test, ${MONTH}`
+    : T === 'Mid Term' ? `Mid Term Examination, ${MONTH}` : `${T} ${f.number.value}, ${MONTH}`);
+  let titleTouched = false;
+  f.p_title.oninput = () => (titleTouched = true);
+  f.number.oninput = () => { if (!titleTouched && !isAsg) f.p_title.value = suggest(); };
+  f.p_title.value = suggest();
+  const PF = ['p_title', 'p_programme', 'p_session', 'p_units', 'p_instructions', 'p_cos', 'p_intro'].filter((k) => f[k]);
+  f.subject_id.onchange = () => {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(`cx-paper-${T}-${f.subject_id.value}`) || 'null'); } catch {}
+    if (saved) PF.forEach((k) => { if (saved[k] && (k !== 'p_title' || isAsg)) f[k].value = saved[k]; });
+  };
+  if (hasMcq) f.querySelectorAll('[name=negmode]').forEach((r) => (r.onchange = () => {
+    const on = f.querySelector('[name=negmode]:checked').value === 'yes';
+    document.getElementById('negrow').hidden = !on;
+    document.getElementById('negnote').hidden = !on;
+  }));
+
   f.onsubmit = act(async () => {
+    const paper = {
+      title: f.p_title.value, programme: f.p_programme.value, session: f.p_session?.value || '', units: f.p_units?.value || '',
+      instructions: f.p_instructions?.value || '', cos: f.p_cos.value, intro: f.p_intro?.value || '', max_marks: f.p_max ? +f.p_max.value || null : null,
+    };
+    try { localStorage.setItem(`cx-paper-${T}-${f.subject_id.value}`, JSON.stringify(Object.fromEntries(PF.map((k) => [k, f[k].value])))); } catch {}
     const questions = [...qs.children].map((b) => {
       const base = {
         kind: b.dataset.kind,
@@ -558,6 +619,8 @@ async function viewNew(kind) {
         max_marks: +b.querySelector('[data-q=max_marks]').value,
         co: b.querySelector('[data-q=co]').value,
         part: b.querySelector('[data-q=part]')?.value || '',
+        label: b.querySelector('[data-q=label]').value,
+        rbtl: +b.querySelector('[data-q=rbtl]').value || null,
       };
       if (base.kind === 'mcq') {
         const rows = [...b.querySelectorAll('.opt .rubric-row')];
@@ -581,7 +644,7 @@ async function viewNew(kind) {
       number: +f.number.value, duration_min: f.duration_min ? +f.duration_min.value : null,
       start_at: new Date(f.start_at.value).toISOString(), end_at: new Date(f.end_at.value).toISOString(),
       release_mode: f.release_mode?.value, shuffle: f.shuffle.checked, option_shuffle: !!f.option_shuffle?.checked,
-      negative: f.negative ? +f.negative.value : 0, questions,
+      negative: f.negative && f.querySelector('[name=negmode]:checked').value === 'yes' ? +f.negative.value : 0, questions, paper,
     });
     toast('Saved as draft');
     location.hash = `#/a/${r.id}`;
@@ -619,9 +682,14 @@ async function viewAssessment(id) {
         <td>${num(t.llm_total)}</td><td>${t.status === 'published' ? num(t.final_total) : '–'}</td><td>${t.tab_switches}</td><td>${t.paste_attempts}</td>
         <td class="right">${t.status === 'in_progress' ? '' : `<a class="btn ghost" href="#/review/${t.id}">${a.can.approve ? 'Review' : 'View'}</a>`}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No student has started yet.</p>'}</div>
-    <div class="card"><h2>Questions</h2>${a.questions.map((q) => `<div class="qbox"><div class="between"><h3>${qno(q)}${q.co ? ` · ${esc(q.co)}` : ''}</h3><span class="pill">${num(q.max_marks)} marks</span></div>
-      <div class="answer">${esc(q.text)}</div>${q.kind === 'mcq' ? optionList(q.options, null, q.correct_index)
-        : `<div class="muted small">Rubric: ${q.rubric.map((r) => `${esc(r.criterion)} (${num(r.marks)})`).join(' · ')}</div>`}</div>`).join('')}</div>`;
+    <div class="card"><div class="between"><h2>Question paper</h2><label class="choice" style="margin:0"><input type="checkbox" id="showkey"> Show answer key and rubric</label></div>
+      <div class="paper-preview" id="paperprev"></div></div>`;
+  const inst = await api('GET', '/settings');
+  if (seq !== nav_seq) return;
+  const pp = document.getElementById('paperprev');
+  const drawPaper = () => (pp.innerHTML = paperDoc(a, inst, document.getElementById('showkey').checked));
+  document.getElementById('showkey').onchange = drawPaper;
+  drawPaper();
   drawAnalysis(document.getElementById('analysis'), a, sheet);
   const del = document.getElementById('delassess');
   if (del) del.onclick = act(async () => {
@@ -754,8 +822,62 @@ async function viewReview(id) {
 }
 
 // Institute header for printed documents (empty until the admin fills in the institute details).
-const letterhead = (inst) => (inst.institute || inst.logo
+const letterhead = (inst) => (inst.letterhead ? `<div class="letterhead lh-img"><img src="${esc(inst.letterhead)}" alt=""></div>` : inst.institute || inst.logo
   ? `<div class="letterhead">${inst.logo ? `<img src="${esc(inst.logo)}" alt="">` : ''}<div><div class="inst-name">${esc(inst.institute)}</div>${inst.line ? `<div>${esc(inst.line)}</div>` : ''}</div></div>` : '');
+
+// ---------- question paper in the institute's own format ----------
+const RBT = ['', 'Remember', 'Understand', 'Apply', 'Analyse', 'Evaluate', 'Create'];
+const ROMAN = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x'];
+// Question text: **bold** is the only markup; line breaks are kept.
+const rich = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+const lines = (t) => (t || '').split('\n').map((x) => x.trim()).filter(Boolean);
+const coLine = (l) => { const i = l.indexOf(':'); return i > 0 && i < 12 ? `<b>${esc(l.slice(0, i + 1))}</b>${esc(l.slice(i + 1))}` : esc(l); };
+const dmy = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, '0')}-${String(x.getMonth() + 1).padStart(2, '0')}-${x.getFullYear()}`; };
+
+function paperDoc(a, inst, key) {
+  const P = (() => { try { return JSON.parse(a.paper_json || '{}'); } catch { return {}; } })();
+  const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
+  const max = P.max_marks || total;
+  const cos = lines(P.cos);
+  const keyRows = (q, span) => !key ? '' : `<tr class="keyrow"><td></td><td colspan="${span}">${q.kind === 'mcq'
+    ? `<b>Answer:</b> (${String.fromCharCode(97 + q.correct_index)}) ${esc(q.options[q.correct_index])}`
+    : `<b>Model answer / key points:</b><div class="pre">${esc(q.model_answer)}</div><b>Rubric:</b> ${q.rubric.map((r) => `${esc(r.criterion)} (${num(r.marks)})`).join('; ')}`}</td></tr>`;
+  const qtext = (q) => `<div class="pre">${rich(q.text)}</div>${q.kind === 'mcq' ? `<div class="opts">${q.options.map((o, i) => `<span>(${String.fromCharCode(97 + i)}) ${esc(o)}</span>`).join('')}</div>` : ''}`;
+  const keyNote = key ? '<p class="keynote">Answer key and rubric (for faculty records, not for students)</p>' : '';
+
+  if (a.type === 'Assignment') {
+    return `<section class="doc pdoc asg">${letterhead(inst)}${keyNote}
+      <h2 class="atitle">Assignment No – ${esc(a.number)}${P.title ? `: ${esc(P.title)}` : ''}</h2>
+      <div class="agrid">
+        <div><b>Program:</b> ${esc(P.programme || '')}</div><div class="r"><b>Session:</b> ${esc(P.session || '')}</div>
+        <div><b>Date of Issue:</b> ${dmy(a.start_at)}</div><div class="r"><b>Date of Submission:</b> ${dmy(a.end_at)}</div>
+        <div><b>Course:</b> ${esc(a.subject_name)}</div><div class="r"><b>Course Code:</b> ${esc(a.subject_code)}</div>
+        <div><b>Course unit included:</b> ${esc(P.units || '')}</div><div class="r"><b>Max. Marks:</b> ${num(max)}</div></div>
+      <hr class="dash">
+      ${cos.length ? `<p><b><u>Course Outcomes:</u></b></p>${cos.map((l) => `<p>${coLine(l)}</p>`).join('')}` : ''}
+      ${P.intro ? `<div class="pre intro">${rich(P.intro)}</div>` : ''}
+      <table class="ptable"><thead><tr><th style="width:9%">S. No.</th><th>Questions</th><th style="width:11%">Course Outcome</th><th style="width:13%">R. Bloom Taxonomy Level</th><th style="width:8%">Marks</th></tr></thead>
+      <tbody>${a.questions.map((q) => `<tr><td class="c">${esc(q.label || `Q${q.seq}`)}</td><td>${qtext(q)}</td><td class="c">${esc(q.co)}</td><td class="c">${q.rbtl ? RBT[q.rbtl] : ''}</td><td class="c">${num(q.max_marks)}</td></tr>${keyRows(q, 4)}`).join('')}</tbody></table>
+    </section>`;
+  }
+
+  const instr = lines(P.instructions);
+  if (a.negative) instr.push(`Wrong MCQ answers carry negative marking (${({ 0.25: '¼', 0.33: '⅓', 0.5: '½', 1: 'full' })[a.negative] || a.negative} of the question's marks). Unattempted questions carry no penalty.`);
+  // Consecutive questions with the same part form one PART table.
+  const groups = [];
+  a.questions.forEach((q) => { const g = groups[groups.length - 1]; if (g && g.part === (q.part || '')) g.qs.push(q); else groups.push({ part: q.part || '', qs: [q] }); });
+  return `<section class="doc pdoc exam">${letterhead(inst)}${keyNote}
+    <div class="roll">Roll No. …………………</div>
+    <div class="ehead"><b>${esc(P.title || `${a.type} ${a.number}`)}</b>${P.programme ? `<br><b>${esc(P.programme)}</b>` : ''}<br><b>Subject: ${esc(a.subject_name)} (${esc(a.subject_code)})</b></div>
+    <div class="between"><b>Time: ${a.duration_min} Minutes</b><b>[Max Marks: ${num(max)}]</b></div>
+    ${instr.length ? `<p class="ins"><b>Instructions:</b></p>${instr.map((l, i) => `<p class="ins">${/^\d+[.)]/.test(l) ? esc(l) : `${i + 1}. ${esc(l)}`}</p>`).join('')}` : ''}
+    ${cos.length ? `<div class="cos">${cos.map((l) => `<p>${coLine(l)}</p>`).join('')}</div>` : ''}
+    ${groups.map((g) => `${g.part ? `<h2 class="partname">PART-${esc(g.part)}</h2>` : ''}
+      <table class="ptable"><thead><tr><th style="width:9%">Q.N.</th><th>Question</th><th style="width:8%">CO</th><th style="width:9%">RBTL</th><th style="width:7%">Marks</th></tr></thead>
+      <tbody>${g.qs.map((q, i) => `<tr><td class="c">${esc(q.label || `${q.seq}.`)}</td><td>${qtext(q)}</td><td class="c">${esc(q.co)}</td><td class="c">${q.rbtl ? `RBTL-${q.rbtl}` : ''}</td><td class="c">${num(q.max_marks)}</td></tr>${keyRows(q, 4)}`).join('')}</tbody></table>`).join('')}
+    <div class="signs"><b>Faculty Name and Sign.</b><b>HOD Sign.</b></div>
+  </section>`;
+}
 
 // ---------- printable documents (faculty) ----------
 // Each page is laid out for A4. "Print / Save as PDF" opens the browser's print dialog, where
@@ -801,13 +923,7 @@ async function viewPrint(kind, id) {
     const a = await api('GET', `/assessments/${id}`);
     const total = a.questions.reduce((s, q) => s + q.max_marks, 0);
     if (kind === 'paper' || kind === 'key') {
-      const key = kind === 'key';
-      html = `<section class="doc">${head}<h1>${key ? 'Question Paper with Answer Key and Rubric' : 'Question Paper'}</h1>${meta(a, total)}
-        ${a.questions.map((q) => `<div class="qblock"><div class="between"><h3>${qno(q)}. ${esc(q.text)}</h3><b class="nowrap">[${num(q.max_marks)}]${q.co ? ` ${esc(q.co)}` : ''}</b></div>
-          ${q.kind === 'mcq' ? optionList(q.options, null, key ? q.correct_index : null)
-            : key ? `<p class="small"><b>Model answer / key points:</b></p><div class="answer">${esc(q.model_answer)}</div>
-              <table><thead><tr><th>Rubric criterion</th><th>Marks</th></tr></thead><tbody>${q.rubric.map((r) => `<tr><td>${esc(r.criterion)}</td><td>${num(r.marks)}</td></tr>`).join('')}</tbody></table>` : ''}</div>`).join('')}
-        ${key ? `<p class="sign">Faculty: ${esc(user.name)} &nbsp; Signature: ____________________</p>` : ''}</section>`;
+      html = paperDoc(a, await api('GET', '/settings'), kind === 'key');
     } else if (kind === 'sheets') {
       const done = a.attempts.filter((t) => t.status === 'published');
       const sheets = [];
@@ -841,7 +957,7 @@ async function viewPrint(kind, id) {
   if (seq !== nav_seq) return;
   app.innerHTML = `<div class="between no-print printbar"><a href="${back}">← Back</a>
       <span><span class="muted small">In the print dialog choose "Save as PDF".</span> <button onclick="window.print()">Print / Save as PDF</button></span></div>
-    <div class="paper">${html}<p class="genline">Generated from Assessment Portal on ${fmt(new Date().toISOString())}</p></div>`;
+    <div class="paper">${html}<p class="genline">Generated by COGNEXA on ${fmt(new Date().toISOString())}</p></div>`;
 }
 
 // ---------- student ----------

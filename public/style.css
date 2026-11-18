@@ -112,3 +112,36 @@ dialog.ask label { margin-bottom: 12px; }
 .type-card:hover, .type-card:focus-visible { background: var(--bg); }
 .type-card h2 { margin: 0 0 6px; }
 .type-card p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.5; }
+
+/* letterhead image and question paper in the institute's format */
+.letterhead.lh-img { display: block; border: 0; padding: 0; }
+.letterhead.lh-img img { width: 100%; max-width: 100%; max-height: none; display: block; }
+.lh-preview { border: 1px solid var(--line); padding: 6px; background: #fff; margin: 6px 0; }
+.lh-preview img { width: 100%; display: block; }
+.paper-preview { border: 1px solid var(--line); background: #fff; padding: 24px; overflow-x: auto; }
+.pdoc { color: #000; font-size: 12.5px; line-height: 1.35; }
+.pdoc.exam { font-family: Arial, Helvetica, sans-serif; }
+.pdoc.asg { font-family: 'Times New Roman', Times, serif; font-size: 13.5px; }
+.pdoc p { margin: 2px 0; }
+.pdoc .pre { white-space: pre-wrap; }
+.pdoc .roll { text-align: right; margin: 6px 0; }
+.pdoc .ehead { text-align: center; margin-bottom: 8px; font-size: 13px; }
+.pdoc .ins { margin: 1px 0; }
+.pdoc .cos { margin: 10px 0; }
+.pdoc .partname { text-align: center; font-family: 'Times New Roman', serif; font-size: 16px; margin: 14px 0 6px; }
+.pdoc .ptable { width: 100%; border-collapse: collapse; margin: 6px 0 12px; }
+.pdoc .ptable th, .pdoc .ptable td { border: 0; border-bottom: 1px solid #d0d0d0; padding: 6px 6px; vertical-align: middle; text-align: left; font-size: inherit; }
+.pdoc .ptable th { text-align: center; font-weight: 700; }
+.pdoc .ptable td.c { text-align: center; }
+.pdoc.asg .ptable th, .pdoc.asg .ptable td { border: 1px solid #000; vertical-align: top; }
+.pdoc.asg .ptable td.c { vertical-align: middle; }
+.pdoc .opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 18px; margin-top: 4px; }
+.pdoc .keyrow td { background: #f3f7f3; font-size: 12px; border-bottom: 1px solid #b8c9b8; }
+.pdoc .keynote { text-align: center; font-weight: 700; border: 1px dashed #000; padding: 3px; margin: 6px 0; }
+.pdoc .signs { display: flex; justify-content: space-between; margin-top: 48px; }
+.pdoc .atitle { text-align: center; text-decoration: underline; font-size: 16px; margin: 10px 0 12px; }
+.pdoc .agrid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 20px; }
+.pdoc .agrid .r { text-align: right; }
+.pdoc hr.dash { border: 0; border-top: 1px dashed #000; margin: 8px 0; }
+.pdoc .intro { margin: 10px 0; }
+@media print { .pdoc .keyrow td { background: none; } .pdoc .ptable tr { break-inside: avoid; } }

@@ -443,8 +443,8 @@ async function handle(request, env, ctx) {
 
   // Institute details printed on documents. Readable by every signed-in member of the institute.
   if (route('GET', /^\/api\/settings$/)) {
-    const i = await env.DB.prepare('SELECT name, line, logo, code FROM institutes WHERE id = ?').bind(inst).first();
-    return json({ institute: i.name, line: i.line, logo: i.logo, code: i.code });
+    const i = await env.DB.prepare('SELECT name, line, logo, letterhead, code FROM institutes WHERE id = ?').bind(inst).first();
+    return json({ institute: i.name, line: i.line, logo: i.logo, letterhead: i.letterhead, code: i.code });
   }
 
   const isStaff = STAFF_ROLES.includes(user.role);
@@ -532,8 +532,12 @@ async function handle(request, env, ctx) {
     const logo = typeof b.logo === 'string' ? b.logo : '';
     if (logo && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(logo)) fail(400, 'Logo must be a PNG or JPG image');
     if (logo.length > 450000) fail(400, 'Logo is too large (keep it under 300 KB)');
-    await env.DB.prepare('UPDATE institutes SET name = ?, line = ?, logo = ? WHERE id = ?')
-      .bind(str(b.institute, 'Institute name', 150), typeof b.line === 'string' ? b.line.trim().slice(0, 200) : '', logo, inst).run();
+    // Letterhead: the institute's own header image, printed at the top of every generated document.
+    const lh = typeof b.letterhead === 'string' ? b.letterhead : '';
+    if (lh && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(lh)) fail(400, 'Letterhead must be a PNG or JPG image');
+    if (lh.length > 950000) fail(400, 'Letterhead image is too large (keep it under 700 KB)');
+    await env.DB.prepare('UPDATE institutes SET name = ?, line = ?, logo = ?, letterhead = ? WHERE id = ?')
+      .bind(str(b.institute, 'Institute name', 150), typeof b.line === 'string' ? b.line.trim().slice(0, 200) : '', logo, lh, inst).run();
     return json({ ok: true });
   }
 
@@ -791,6 +795,14 @@ async function handle(request, env, ctx) {
       : type === 'Assignment' && b.release_mode === 'instant' ? 'instant' : 'after_approval';
     const mcqAllowed = !WRITTEN_ONLY.includes(type);
     const negative = mcqAllowed && [0, 0.25, 0.33, 0.5, 1].includes(Number(b.negative)) ? Number(b.negative) : 0;
+    // Header details printed on the question paper (title, programme, instructions, CO statements…).
+    const pin = b.paper && typeof b.paper === 'object' ? b.paper : {};
+    const ptxt = (k, n) => (typeof pin[k] === 'string' ? pin[k].trim().slice(0, n) : '');
+    const paper = {
+      title: ptxt('title', 150), programme: ptxt('programme', 150), session: ptxt('session', 40), units: ptxt('units', 60),
+      instructions: ptxt('instructions', 2000), cos: ptxt('cos', 3000), intro: ptxt('intro', 3000),
+      max_marks: Number(pin.max_marks) > 0 && Number(pin.max_marks) <= 1000 ? Number(pin.max_marks) : null,
+    };
     const subject = await env.DB.prepare('SELECT name, code FROM subjects WHERE id = ? AND institute_id = ?').bind(b.subject_id ?? 0, inst).first();
     if (!subject) fail(400, 'Choose a subject');
     const sectionIds = [...new Set(Array.isArray(b.section_ids) ? b.section_ids.filter(Number.isInteger) : [])];
@@ -806,7 +818,10 @@ async function handle(request, env, ctx) {
       if (!(max > 0 && max <= 100)) fail(400, `${label}: invalid max marks`);
       const co = typeof q.co === 'string' ? q.co.trim().slice(0, 20) : '';
       if (type === 'Mid Term' && !co) fail(400, `${label}: give the CO (required for a Mid Term paper)`);
-      const part = type === 'Mid Term' && typeof q.part === 'string' ? q.part.trim().slice(0, 20) : '';
+      const part = type !== 'Assignment' && typeof q.part === 'string' ? q.part.trim().slice(0, 20) : '';
+      if (type === 'Mid Term' && !part) fail(400, `${label}: give the part (e.g. A)`);
+      const qlabel = typeof q.label === 'string' ? q.label.trim().slice(0, 12) : '';
+      const rbtl = Number.isInteger(q.rbtl) && q.rbtl >= 1 && q.rbtl <= 6 ? q.rbtl : null;
       if (q.kind === 'mcq') {
         if (!mcqAllowed) fail(400, `${label}: a ${type} has only written (descriptive) questions`);
         if (!Array.isArray(q.options) || q.options.length < 2 || q.options.length > 6) fail(400, `${label}: give 2 to 6 options`);
@@ -814,7 +829,7 @@ async function handle(request, env, ctx) {
         if (!Number.isInteger(q.correct_index) || q.correct_index < 0 || q.correct_index >= options.length) {
           fail(400, `${label}: mark the correct option`);
         }
-        return { kind: 'mcq', text: str(q.text, `${label} text`, 5000), max, co, part, model: '', rubric: [], options, correct: q.correct_index };
+        return { kind: 'mcq', text: str(q.text, `${label} text`, 5000), max, co, part, qlabel, rbtl, model: '', rubric: [], options, correct: q.correct_index };
       }
       if (type === 'MCQ Test') fail(400, `${label}: an MCQ Test can contain only MCQ questions`);
       if (!Array.isArray(q.rubric) || !q.rubric.length) fail(400, `${label}: add at least one rubric criterion`);
@@ -831,6 +846,8 @@ async function handle(request, env, ctx) {
         max,
         co,
         part,
+        qlabel,
+        rbtl,
         model: str(q.model_answer, `${label} model answer`, 8000),
         rubric,
         options: null,
@@ -842,21 +859,21 @@ async function handle(request, env, ctx) {
       fail(400, 'A Hybrid assessment needs at least one MCQ and one written question');
     }
     const ins = await env.DB.prepare(
-      `INSERT INTO assessments (institute_id, department_id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at, shuffle, negative, option_shuffle)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO assessments (institute_id, department_id, faculty_id, subject_name, subject_code, type, number, duration_min, start_at, end_at, release_mode, created_at, shuffle, negative, option_shuffle, paper_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
       .bind(inst, user.department_id ?? null, user.id, subject.name, subject.code, type, number, duration,
-        start.toISOString(), end.toISOString(), release, now(), b.shuffle ? 1 : 0, negative, mcqAllowed && b.option_shuffle ? 1 : 0)
+        start.toISOString(), end.toISOString(), release, now(), b.shuffle ? 1 : 0, negative, mcqAllowed && b.option_shuffle ? 1 : 0, JSON.stringify(paper))
       .run();
     const id = ins.meta.last_row_id;
     await env.DB.batch([
       ...sectionIds.map((sid) => env.DB.prepare('INSERT INTO assessment_sections (assessment_id, section_id) VALUES (?,?)').bind(id, sid)),
       ...questions.map((q, i) =>
         env.DB.prepare(
-          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index, part)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO questions (assessment_id, seq, text, max_marks, co, model_answer, rubric_json, kind, options_json, correct_index, part, label, rbtl)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).bind(id, i + 1, q.text, q.max, q.co, q.model, JSON.stringify(q.rubric), q.kind,
-          q.options ? JSON.stringify(q.options) : null, q.correct, q.part),
+          q.options ? JSON.stringify(q.options) : null, q.correct, q.part, q.qlabel, q.rbtl),
       ),
     ]);
     return json({ id });
@@ -946,7 +963,7 @@ async function handle(request, env, ctx) {
     const t = await staffAttempt(+m[1]);
     const { results } = await env.DB.prepare(
       `SELECT a.id, a.text, a.eval_status, a.eval_error, a.llm_marks, a.llm_json, a.llm_confidence, a.final_marks, a.faculty_remark,
-              q.seq, q.part, q.text AS qtext, q.max_marks, q.co, q.model_answer, q.kind, q.options_json, q.correct_index
+              q.seq, q.part, q.label, q.text AS qtext, q.max_marks, q.co, q.model_answer, q.kind, q.options_json, q.correct_index
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
       .bind(t.id)
@@ -1038,7 +1055,7 @@ async function handle(request, env, ctx) {
     ).bind(+m[1], user.section_id, inst).first();
     if (!a) fail(404, 'Assessment not found');
     let t = await env.DB.prepare('SELECT * FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(a.id, user.id).first();
-    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json, part FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
+    const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json, part, label FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
     if (!t) {
       const t0 = Date.now();
       if (t0 < Date.parse(a.start_at)) fail(403, 'This assessment has not started yet');
@@ -1075,7 +1092,7 @@ async function handle(request, env, ctx) {
       server_now: now(),
       assessment: { subject_name: a.subject_name, subject_code: a.subject_code, type: a.type, number: a.number, negative: a.negative },
       questions: qs.results.map((q) => ({
-        id: q.id, seq: q.seq, text: q.text, max_marks: q.max_marks, kind: q.kind, part: q.part,
+        id: q.id, seq: q.seq, text: q.text, max_marks: q.max_marks, kind: q.kind, part: q.part, label: q.label,
         options: q.options_json ? JSON.parse(q.options_json) : null,
         // Shuffled display order of the options; answers are still stored as the original option index.
         order: q.options_json && a.option_shuffle
@@ -1138,7 +1155,7 @@ async function handle(request, env, ctx) {
     if (t.status !== 'published') return json({ published: false, status: t.status });
     const a = await env.DB.prepare('SELECT subject_name, subject_code, type, number FROM assessments WHERE id = ?').bind(t.assessment_id).first();
     const { results } = await env.DB.prepare(
-      `SELECT q.seq, q.part, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
+      `SELECT q.seq, q.part, q.label, q.text AS qtext, q.max_marks, q.kind, q.options_json, q.correct_index,
               a.text, a.final_marks, a.llm_marks, a.llm_json, a.faculty_remark
        FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.attempt_id = ? ORDER BY q.seq`,
     )
