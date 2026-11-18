@@ -190,6 +190,46 @@ export const SCHEMA = [
     done_by TEXT,
     done_at TEXT
   )`,
+  // Question paper moderation (format A51): versions, DQAC reviews, the faculty's compliance, and who opened the paper.
+  `CREATE TABLE IF NOT EXISTS paper_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    assessment_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (assessment_id, version)
+  )`,
+  `CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    assessment_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    reviewer_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    checklist_json TEXT,
+    comments_json TEXT,
+    decision TEXT,
+    remarks TEXT,
+    due_date TEXT,
+    assigned_at TEXT NOT NULL,
+    submitted_at TEXT,
+    UNIQUE (assessment_id, version, reviewer_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS compliance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    assessment_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    items_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS paper_views (
+    assessment_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    user_name TEXT,
+    at TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     institute_id INTEGER,

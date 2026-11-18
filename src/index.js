@@ -4,6 +4,21 @@ import { evaluateAnswer, suggestRubric } from './evaluator.js';
 // Types a faculty member can create. 'Tutorial' exists only in older data.
 const TYPES = ['Mid Term', 'Sessional', 'Assignment', 'MCQ Test', 'Hybrid'];
 const WRITTEN_ONLY = ['Mid Term', 'Sessional', 'Assignment'];
+// Papers that go through DQAC moderation and HOD approval before students see them (MCQ tests do not).
+const NEEDS_REVIEW = ['Mid Term', 'Sessional', 'Assignment', 'Hybrid'];
+// Format A51-B: the DQAC moderation checklist.
+const CHECKLIST = [
+  'Coverage only from taught / approved syllabus portion',
+  'Question paper as per approved pattern and marks distribution',
+  'CO-wise mapping available and correct',
+  'Difficulty level / Bloom’s level balanced',
+  'Questions clear, unambiguous, and technically correct',
+  'Internal choice / compulsory questions properly structured',
+  'Numerical / theory / design balance appropriate',
+  'Instructions to students complete and correct',
+  'Spelling / code / unit / notation errors checked',
+  'Confidentiality maintained during moderation',
+];
 const SESSION_HOURS = 12;
 const GRACE_SECONDS = 60; // allowance for the final autosave / auto-submit after the deadline
 
@@ -553,13 +568,25 @@ async function handle(request, env, ctx) {
     }
     return { sql: 's.institute_id = ? AND s.faculty_id = ?', binds: [inst, user.id] };
   };
+  const isReviewer = async (aid) => !!(await env.DB.prepare('SELECT 1 FROM reviews WHERE assessment_id = ? AND reviewer_id = ?').bind(aid, user.id).first());
+  const isHodOf = (a) => user.role === 'hod' && !!user.department_id && a.department_id === user.department_id;
+  // A paper is confidential until it is published: only its author, the HOD of its department and its DQAC reviewers may open it.
   const readAssessment = async (id) => {
     staff();
     const sc = scope();
-    const a = await env.DB.prepare(
+    let a = await env.DB.prepare(
       `SELECT s.*, f.name AS faculty_name FROM assessments s JOIN users f ON f.id = s.faculty_id WHERE s.id = ? AND ${sc.sql}`,
     ).bind(id, ...sc.binds).first();
-    return a || fail(404, 'Assessment not found');
+    const reviewer = await isReviewer(id);
+    if (!a && reviewer) {
+      a = await env.DB.prepare('SELECT s.*, f.name AS faculty_name FROM assessments s JOIN users f ON f.id = s.faculty_id WHERE s.id = ? AND s.institute_id = ?').bind(id, inst).first();
+    }
+    if (!a) fail(404, 'Assessment not found');
+    if (a.status !== 'published' && a.faculty_id !== user.id) {
+      if (!isHodOf(a) && !reviewer) fail(403, 'This paper is confidential until it is published.');
+      await env.DB.prepare('INSERT INTO paper_views (assessment_id, user_id, user_name, at) VALUES (?,?,?,?)').bind(a.id, user.id, user.name, now()).run();
+    }
+    return a;
   };
   // Changing an assessment itself (publish, delete) is for the person who created it.
   const ownAssessment = async (id) => {
@@ -1392,7 +1419,8 @@ async function handle(request, env, ctx) {
     )
       .bind(...sc.binds)
       .all();
-    return json(results.map((a) => ({ ...a, total_marks: paperMax(a, a.total_marks), paper_json: undefined, mine: a.faculty_id === user.id })));
+    return json(results.filter((a) => a.status === 'published' || a.faculty_id === user.id || isHodOf(a))
+      .map((a) => ({ ...a, total_marks: paperMax(a, a.total_marks), paper_json: undefined, mine: a.faculty_id === user.id, needs_review: NEEDS_REVIEW.includes(a.type) })));
   }
 
   // Creating and editing a paper go through the same checks.
@@ -1648,9 +1676,197 @@ async function handle(request, env, ctx) {
   if ((m = route('POST', /^\/api\/assessments\/(\d+)\/publish$/))) {
     // (creator only: checked by ownAssessment)
     const a = await ownAssessment(+m[1]);
+    if (NEEDS_REVIEW.includes(a.type) && a.stage !== 'approved') fail(409, 'This paper needs DQAC moderation and HOD approval before it can be published.');
     await env.DB.prepare(`UPDATE assessments SET status='published' WHERE id = ?`).bind(a.id).run();
     await audit('assessment published', `${a.type} ${a.number} ${a.subject_code}`);
     return json({ ok: true });
+  }
+
+  // ----- question paper moderation (A51): submit → DQAC review → compliance → re-submit → HOD approval -----
+
+  const lastVersion = async (aid) => (await env.DB.prepare('SELECT MAX(version) AS v FROM paper_versions WHERE assessment_id = ?').bind(aid).first()).v || 0;
+  const snapshot = async (a) => {
+    const qs = await env.DB.prepare('SELECT seq, part, label, text, max_marks, co, rbtl, kind, options_json, correct_index, model_answer, rubric_json FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
+    return JSON.stringify({ paper: paperOf(a), questions: qs.results });
+  };
+  const userNames = async (ids) => {
+    if (!ids.length) return new Map();
+    const r = await env.DB.prepare(`SELECT id, name, designation, signature FROM users WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+    return new Map(r.results.map((x) => [x.id, x]));
+  };
+
+  if ((m = route('GET', /^\/api\/assessments\/(\d+)\/moderation$/))) {
+    const a = await readAssessment(+m[1]);
+    if (!NEEDS_REVIEW.includes(a.type)) return json({ needed: false });
+    const [vers, revs, comp, views, dq, sub] = await env.DB.batch([
+      env.DB.prepare('SELECT version, created_at FROM paper_versions WHERE assessment_id = ? ORDER BY version').bind(a.id),
+      env.DB.prepare('SELECT * FROM reviews WHERE assessment_id = ? ORDER BY version, id').bind(a.id),
+      env.DB.prepare('SELECT version, items_json, created_at FROM compliance WHERE assessment_id = ? ORDER BY version').bind(a.id),
+      env.DB.prepare('SELECT user_name, at FROM paper_views WHERE assessment_id = ? ORDER BY at DESC LIMIT 50').bind(a.id),
+      env.DB.prepare(`SELECT q.user_id, q.position, u.name FROM dqac q JOIN users u ON u.id = q.user_id WHERE q.department_id = ? ORDER BY q.position, u.name`).bind(a.department_id ?? 0),
+      env.DB.prepare('SELECT cos_json FROM subjects WHERE id = ?').bind(a.subject_id ?? 0),
+    ]);
+    const v = vers.results.length ? vers.results[vers.results.length - 1].version : 0;
+    const people = await userNames([...new Set([...revs.results.map((r) => r.reviewer_id), a.approved_by_id, a.faculty_id].filter(Boolean))]);
+    const reviews = revs.results.map((r) => ({
+      id: r.id, version: r.version, reviewer_id: r.reviewer_id, reviewer: people.get(r.reviewer_id)?.name, status: r.status, decision: r.decision,
+      remarks: r.remarks, due_date: r.due_date, assigned_at: r.assigned_at, submitted_at: r.submitted_at,
+      checklist: JSON.parse(r.checklist_json || '[]'), comments: JSON.parse(r.comments_json || '[]'),
+    }));
+    const current = reviews.filter((r) => r.version === v);
+    const myPending = current.find((r) => r.reviewer_id === user.id && r.status === 'pending');
+    // Remarks the faculty must answer: everything from the reviews of the latest version that asked for changes.
+    const remarks = a.stage === 'changes' ? current.filter((r) => r.decision === 'resubmit').flatMap((r) => [
+      ...r.checklist.map((c, i) => (c.action ? { from: r.reviewer, text: `${CHECKLIST[i]}: ${c.action}` } : null)).filter(Boolean),
+      ...r.comments.filter((c) => c.text).map((c) => ({ from: r.reviewer, text: `Q ${c.label}: ${c.text}` })),
+      ...(r.remarks ? [{ from: r.reviewer, text: r.remarks }] : []),
+    ]) : [];
+    const doneAll = current.length > 0 && current.every((r) => r.status === 'done');
+    const sigOf = (id) => people.get(id)?.signature || null;
+    return json({
+      needed: true, stage: a.stage || 'draft', version: v, checklist: CHECKLIST,
+      versions: vers.results, reviews, compliance: comp.results.map((c) => ({ ...c, items: JSON.parse(c.items_json), items_json: undefined })),
+      views: isHodOf(a) || a.faculty_id === user.id ? views.results : [],
+      dqac: isHodOf(a) ? dq.results.filter((x) => x.user_id !== a.faculty_id) : [],
+      cos: JSON.parse(sub.results[0]?.cos_json || '[]'),
+      remarks, approved_by: a.approved_by, approved_at: a.approved_at,
+      signatures: Object.fromEntries([...people.keys()].map((id) => [id, sigOf(id)]).filter(([, x]) => x)),
+      can: {
+        submit: a.faculty_id === user.id && ['draft', 'changes'].includes(a.stage || 'draft'),
+        assign: isHodOf(a) && a.stage === 'review',
+        review: myPending ? myPending.id : null,
+        approve: isHodOf(a) && a.stage === 'review' && doneAll && current.every((r) => r.decision === 'ok'),
+      },
+    });
+  }
+
+  if ((m = route('POST', /^\/api\/assessments\/(\d+)\/submit-review$/))) {
+    const a = await ownAssessment(+m[1]);
+    if (!NEEDS_REVIEW.includes(a.type)) fail(400, 'MCQ tests do not need moderation');
+    if (!['draft', 'changes'].includes(a.stage || 'draft')) fail(409, 'This paper is already with the DQAC');
+    const b = await body(request);
+    const v = await lastVersion(a.id);
+    const stmts = [];
+    if (a.stage === 'changes') {
+      // A51-C: the faculty answers each remark and declares the corrections are in the paper.
+      const items = Array.isArray(b.compliance) ? b.compliance : [];
+      if (!items.length || items.some((x) => typeof x.done !== 'string' || !x.done.trim())) fail(400, 'Write what you changed against every remark');
+      if (b.declared !== true) fail(400, 'Tick the declaration that all corrections are in the paper');
+      stmts.push(env.DB.prepare('INSERT INTO compliance (institute_id, assessment_id, version, items_json, created_at) VALUES (?,?,?,?,?)')
+        .bind(inst, a.id, v + 1, JSON.stringify(items.slice(0, 60).map((x) => ({ remark: String(x.remark || '').slice(0, 600), done: x.done.trim().slice(0, 600), ref: String(x.ref || '').slice(0, 30) }))), now()));
+    }
+    stmts.push(env.DB.prepare('INSERT INTO paper_versions (institute_id, assessment_id, version, snapshot_json, created_at) VALUES (?,?,?,?,?)').bind(inst, a.id, v + 1, await snapshot(a), now()));
+    stmts.push(env.DB.prepare(`UPDATE assessments SET stage = 'review' WHERE id = ?`).bind(a.id));
+    // A re-submission goes back to the members who reviewed it, so they can verify the compliance.
+    if (v) {
+      const prev = await env.DB.prepare('SELECT DISTINCT reviewer_id FROM reviews WHERE assessment_id = ? AND version = ?').bind(a.id, v).all();
+      for (const r of prev.results) stmts.push(env.DB.prepare('INSERT OR IGNORE INTO reviews (institute_id, assessment_id, version, reviewer_id, assigned_at) VALUES (?,?,?,?,?)').bind(inst, a.id, v + 1, r.reviewer_id, now()));
+    }
+    await env.DB.batch(stmts);
+    await audit(v ? 'paper re-submitted for review' : 'paper submitted for review', `${a.type} ${a.number} ${a.subject_code} v${v + 1}`);
+    return json({ ok: true, version: v + 1 });
+  }
+
+  if ((m = route('POST', /^\/api\/assessments\/(\d+)\/assign$/))) {
+    const a = await readAssessment(+m[1]);
+    if (!isHodOf(a)) fail(403, 'Only the HOD of this department assigns reviewers');
+    if (a.stage !== 'review') fail(409, 'The paper has not been submitted for review');
+    const b = await body(request);
+    const ids = [...new Set((Array.isArray(b.reviewer_ids) ? b.reviewer_ids : []).map(Number))];
+    if (!ids.length) fail(400, 'Choose at least one DQAC member');
+    if (ids.includes(a.faculty_id)) fail(400, 'The author of the paper cannot review it');
+    const dq = (await env.DB.prepare('SELECT user_id FROM dqac WHERE department_id = ?').bind(a.department_id ?? 0).all()).results.map((x) => x.user_id);
+    if (ids.some((id) => !dq.includes(id) && id !== user.id)) fail(400, 'Reviewers must be DQAC members of the department');
+    const v = await lastVersion(a.id);
+    const due = typeof b.due_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date) ? b.due_date : null;
+    await env.DB.batch(ids.map((id) => env.DB.prepare('INSERT OR IGNORE INTO reviews (institute_id, assessment_id, version, reviewer_id, assigned_at, due_date) VALUES (?,?,?,?,?,?)').bind(inst, a.id, v, id, now(), due)));
+    await audit('reviewers assigned', `${a.type} ${a.number} ${a.subject_code} v${v}: ${ids.length} member(s)`);
+    return json({ ok: true });
+  }
+
+  if ((m = route('POST', /^\/api\/reviews\/(\d+)$/))) {
+    const r = await env.DB.prepare('SELECT * FROM reviews WHERE id = ? AND reviewer_id = ? AND institute_id = ?').bind(+m[1], user.id, inst).first();
+    if (!r) fail(404, 'Review not found');
+    if (r.status !== 'pending') fail(409, 'You have already submitted this review');
+    const a = await env.DB.prepare('SELECT * FROM assessments WHERE id = ?').bind(r.assessment_id).first();
+    if (r.version !== await lastVersion(a.id)) fail(409, 'A newer version of the paper has been submitted');
+    const b = await body(request);
+    const list = Array.isArray(b.checklist) ? b.checklist : [];
+    if (list.length !== CHECKLIST.length || list.some((c) => typeof c.ok !== 'boolean')) fail(400, 'Answer Yes or No for every checklist point');
+    const checklist = list.map((c) => ({ ok: c.ok, obs: String(c.obs || '').trim().slice(0, 500), action: String(c.action || '').trim().slice(0, 500) }));
+    const comments = (Array.isArray(b.comments) ? b.comments : []).filter((c) => c && String(c.text || '').trim())
+      .slice(0, 80).map((c) => ({ label: String(c.label || '').slice(0, 20), text: String(c.text).trim().slice(0, 800) }));
+    const decision = b.decision === 'resubmit' ? 'resubmit' : b.decision === 'ok' ? 'ok' : fail(400, 'Choose the decision');
+    if (decision === 'resubmit' && !checklist.some((c) => c.action) && !comments.length && !String(b.remarks || '').trim()) fail(400, 'Say what has to be corrected');
+    const due = typeof b.due_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date) ? b.due_date : r.due_date;
+    await env.DB.prepare(`UPDATE reviews SET status = 'done', checklist_json = ?, comments_json = ?, decision = ?, remarks = ?, due_date = ?, submitted_at = ? WHERE id = ?`)
+      .bind(JSON.stringify(checklist), JSON.stringify(comments), decision, String(b.remarks || '').trim().slice(0, 2000), due, now(), r.id).run();
+    // When every reviewer of this version has answered and any asked for changes, the paper goes back to its author.
+    const pending = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(decision = 'resubmit') AS re FROM reviews WHERE assessment_id = ? AND version = ? AND status != 'done'`).bind(a.id, r.version).first();
+    const anyResubmit = await env.DB.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE assessment_id = ? AND version = ? AND decision = 'resubmit'`).bind(a.id, r.version).first();
+    if (!pending.n && anyResubmit.n) await env.DB.prepare(`UPDATE assessments SET stage = 'changes' WHERE id = ?`).bind(a.id).run();
+    await audit('paper reviewed', `${a.type} ${a.number} ${a.subject_code} v${r.version}: ${decision === 'ok' ? 'fit' : 'resubmit'}`);
+    return json({ ok: true });
+  }
+
+  if ((m = route('POST', /^\/api\/assessments\/(\d+)\/hod-approve$/))) {
+    const a = await readAssessment(+m[1]);
+    if (!isHodOf(a)) fail(403, 'Only the HOD of this department approves the paper');
+    if (a.stage !== 'review') fail(409, 'The paper is not awaiting approval');
+    const v = await lastVersion(a.id);
+    const st = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(status = 'done') AS done, SUM(decision = 'resubmit') AS re FROM reviews WHERE assessment_id = ? AND version = ?`).bind(a.id, v).first();
+    if (!st.n) fail(409, 'Assign DQAC reviewers first');
+    if (st.done < st.n) fail(409, 'Some DQAC members have not submitted their review yet');
+    if (st.re) fail(409, 'A reviewer asked for changes');
+    await env.DB.prepare(`UPDATE assessments SET stage = 'approved', approved_by = ?, approved_by_id = ?, approved_at = ? WHERE id = ?`).bind(user.name, user.id, now(), a.id).run();
+    await audit('paper approved by HOD', `${a.type} ${a.number} ${a.subject_code} v${v}`);
+    return json({ ok: true });
+  }
+
+  // A51-G: the HOD's master tracker of every paper in the department.
+  if (route('GET', /^\/api\/moderation\/tracker$/)) {
+    if (user.role !== 'hod' || !user.department_id) fail(403, 'Heads of department only');
+    const { results } = await env.DB.prepare(`SELECT s.id, s.type, s.number, s.subject_code, s.subject_name, s.stage, s.status, s.approved_at, f.name AS faculty,
+        (SELECT MIN(created_at) FROM paper_versions WHERE assessment_id = s.id) AS submitted_at,
+        (SELECT MAX(version) FROM paper_versions WHERE assessment_id = s.id) AS version,
+        (SELECT MAX(submitted_at) FROM reviews WHERE assessment_id = s.id AND version = 1) AS moderated_at,
+        (SELECT MAX(created_at) FROM compliance WHERE assessment_id = s.id) AS compliance_at,
+        (SELECT COUNT(*) FROM reviews WHERE assessment_id = s.id AND version = (SELECT MAX(version) FROM paper_versions WHERE assessment_id = s.id)) AS reviewers,
+        (SELECT COUNT(*) FROM reviews WHERE assessment_id = s.id AND status = 'pending') AS pending
+      FROM assessments s JOIN users f ON f.id = s.faculty_id
+      WHERE s.institute_id = ? AND s.department_id = ? AND s.type IN ('Mid Term','Sessional','Assignment','Hybrid') ORDER BY s.id DESC`).bind(inst, user.department_id).all();
+    return json(results);
+  }
+
+  // Reviews waiting for this DQAC member.
+  if (route('GET', /^\/api\/reviews\/mine$/)) {
+    staff();
+    const { results } = await env.DB.prepare(`SELECT r.id, r.assessment_id, r.version, r.status, r.due_date, r.assigned_at, s.type, s.number, s.subject_code, s.subject_name, f.name AS faculty
+      FROM reviews r JOIN assessments s ON s.id = r.assessment_id JOIN users f ON f.id = s.faculty_id
+      WHERE r.reviewer_id = ? AND r.institute_id = ? ORDER BY r.status DESC, r.id DESC LIMIT 100`).bind(user.id, inst).all();
+    return json(results);
+  }
+
+  // Signatures for moderation reports: each person their own, or the HOD for the department's members.
+  if ((m = route('PUT', /^\/api\/signature(?:\/(\d+))?$/))) {
+    staff();
+    const b = await body(request);
+    const img = typeof b.image === 'string' ? b.image : '';
+    if (img && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(img)) fail(400, 'Signature must be a PNG or JPG image');
+    if (img.length > 140000) fail(400, 'Signature image is too large (keep it under 100 KB)');
+    let target = user.id;
+    if (m[1]) {
+      const t = await env.DB.prepare('SELECT id, department_id FROM users WHERE id = ? AND institute_id = ?').bind(+m[1], inst).first();
+      if (!t || user.role !== 'hod' || t.department_id !== user.department_id) fail(403, 'The HOD can add signatures only for the department\'s members');
+      target = t.id;
+    }
+    await env.DB.prepare('UPDATE users SET signature = ? WHERE id = ?').bind(img || null, target).run();
+    return json({ ok: true });
+  }
+  if (route('GET', /^\/api\/signature$/)) {
+    staff();
+    const r = await env.DB.prepare('SELECT signature FROM users WHERE id = ?').bind(user.id).first();
+    return json({ image: r?.signature || '' });
   }
 
   // ----- faculty: review -----

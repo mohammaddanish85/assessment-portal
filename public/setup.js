@@ -398,13 +398,141 @@ async function viewDqac() {
   const pos = new Map(d.members.map((x) => [x.user_id, x.position]));
   app.innerHTML = `<h1>DQAC committee</h1>
     <div class="card"><p class="small muted" style="margin-top:0">Choose the department's quality assurance committee. You can change it any time; papers are sent for moderation to these members (never to the paper's own author).</p>
-    <form id="fdq">${tbl(['Member', 'Name', 'Designation', 'Position'], d.faculty.map((x) => `<tr><td><input type="checkbox" name="m" value="${x.id}"${pos.has(x.id) ? ' checked' : ''} style="width:auto" aria-label="${esc(x.name)}"></td>
+    <form id="fdq">${tbl(['Member', 'Name', 'Designation', 'Position', ''], d.faculty.map((x) => `<tr><td><input type="checkbox" name="m" value="${x.id}"${pos.has(x.id) ? ' checked' : ''} style="width:auto" aria-label="${esc(x.name)}"></td>
       <td>${esc(x.name)}</td><td class="small">${esc(x.designation || '–')}</td>
-      <td><select data-pos="${x.id}" style="margin:0"><option value="member">Member</option><option value="coordinator"${pos.get(x.id) === 'coordinator' ? ' selected' : ''}>DQAC coordinator</option></select></td></tr>`), 'No faculty in your department yet.')}
+      <td><select data-pos="${x.id}" style="margin:0"><option value="member">Member</option><option value="coordinator"${pos.get(x.id) === 'coordinator' ? ' selected' : ''}>DQAC coordinator</option></select></td>
+      <td><label class="small" style="margin:0">Signature<input type="file" accept="image/png,image/jpeg" data-sig="${x.id}" style="margin:0"></label></td></tr>`), 'No faculty in your department yet.')}
     <p><button>Save committee</button> <span class="small muted">You, as HOD, head the committee.</span></p></form></div>`;
+  app.querySelectorAll('[data-sig]').forEach((inp) => (inp.onchange = imgPicker(100, async (img) => {
+    try { await api('PUT', `/signature/${inp.dataset.sig}`, { image: img }); toast('Signature saved'); } catch (err) { toast(err.message, true); }
+  })));
   document.getElementById('fdq').onsubmit = act(async (e) => {
     const members = [...e.target.querySelectorAll('[name=m]:checked')].map((c) => ({ user_id: +c.value, position: e.target.querySelector(`[data-pos="${c.value}"]`).value }));
     await api('PUT', '/dqac', { members });
     toast('Committee saved');
   });
+}
+
+// ---------- question paper moderation (A51) ----------
+
+const STAGE = {
+  draft: ['Draft', 'warn'], review: ['With DQAC', ''], changes: ['Changes asked', 'bad'], approved: ['Approved by HOD', 'ok'],
+};
+const stagePill = (s) => { const [t, c] = STAGE[s || 'draft'] || STAGE.draft; return `<span class="pill ${c}">${t}</span>`; };
+
+// The moderation card on an assessment page: what the author, the HOD and a DQAC reviewer can do right now.
+async function drawModeration(el, a, reload) {
+  const d = await api('GET', `/assessments/${a.id}/moderation`);
+  if (!d.needed) { el.remove(); return; }
+  const cur = d.reviews.filter((r) => r.version === d.version);
+  const alerts = typeof coAlerts === 'function' && d.cos.length ? coAlerts(d.cos, a.questions.map((q) => ({ co: q.co, rbtl: q.rbtl }))) : [];
+  const revRow = (r) => `<tr><td>v${r.version}</td><td>${esc(r.reviewer || '–')}</td><td>${r.status === 'done' ? (r.decision === 'ok' ? '<span class="pill ok">Fit</span>' : '<span class="pill bad">Resubmit</span>') : '<span class="pill warn">Pending</span>'}</td>
+    <td class="small">${r.submitted_at ? fmt(r.submitted_at) : r.due_date ? `Due ${esc(r.due_date)}` : '–'}</td>
+    <td class="small">${r.status === 'done' ? `${r.checklist.filter((c) => !c.ok).length ? `${r.checklist.filter((c) => !c.ok).length} point(s) marked No. ` : 'All 10 points Yes. '}${esc(r.remarks || '')}` : ''}</td></tr>`;
+  el.innerHTML = `<div class="between"><h2>Moderation (DQAC) ${stagePill(d.stage)}</h2><span class="small">${d.version ? `Version v${d.version}` : 'Not submitted yet'} · <a href="#/print/a51/${a.id}">A51 file</a></span></div>
+    ${alerts.length ? `<div class="note warn"><b>CO and Bloom level check</b><ul class="tight">${alerts.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    ${d.stage === 'approved' ? `<p class="small">Approved by <b>${esc(d.approved_by)}</b> on ${fmt(d.approved_at)}. The paper is locked; publish it when the test is due.</p>` : ''}
+    ${d.can.submit && d.stage === 'draft' ? `<p>When the paper is ready, send it to the DQAC. It will be locked while it is reviewed.</p><p><button type="button" id="msub">Submit for DQAC review</button></p>` : ''}
+    ${d.can.submit && d.stage === 'changes' ? `<div class="note bad"><b>The DQAC asked for changes.</b> Edit the paper, then answer each remark below and re-submit.</div>
+      <p><a class="btn ghost" href="#/edit/${a.id}">Edit paper</a></p>
+      <form id="mcomp">${d.remarks.map((r, i) => `<div class="qbox"><div class="small muted">${esc(r.from)}</div><div>${esc(r.text)}</div>
+        <div class="row"><label style="flex:3 1 260px">What you changed<input name="done${i}" required></label><label style="max-width:140px">Question ref<input name="ref${i}" placeholder="2. (a)"></label></div></div>`).join('')}
+        <label class="choice"><input type="checkbox" name="declared" required> I certify that all corrections suggested during moderation are in the revised paper.</label>
+        <p><button>Re-submit for review</button></p></form>` : ''}
+    ${d.can.assign ? `<div class="qbox"><h3>Send for review</h3>${d.dqac.length ? `<form id="massign"><div class="checks">${d.dqac.map((m) => `<label class="choice"><input type="checkbox" name="r" value="${m.user_id}"${cur.some((r) => r.reviewer_id === m.user_id) ? ' checked disabled' : ''}> ${esc(m.name)}${m.position === 'coordinator' ? ' <span class="muted small">(coordinator)</span>' : ''}</label>`).join('')}</div>
+      <div class="row"><label style="max-width:220px">Review due by<input type="date" name="due"></label><p><button>Send to selected members</button></p></div></form>` : '<p class="small muted">Set the DQAC committee first (DQAC page).</p>'}</div>` : ''}
+    ${d.can.approve ? `<p><button type="button" id="mapprove">Approve paper (HOD)</button> <span class="small muted">All reviewers found the paper fit.</span></p>` : ''}
+    ${d.can.review ? `<form id="mrev" class="qbox"><h3>Your review (A51-B)</h3>
+      <div class="scroll"><table><thead><tr><th>#</th><th>Moderation parameter</th><th>Status</th><th>Observation / deficiency</th><th>Action required</th></tr></thead><tbody>
+      ${d.checklist.map((c, i) => `<tr><td>${i + 1}</td><td class="small">${esc(c)}</td><td><select name="ok${i}" required style="margin:0;min-width:80px"><option value="">–</option><option value="1">Yes</option><option value="0">No</option></select></td>
+        <td><input name="obs${i}" style="margin:0"></td><td><input name="act${i}" style="margin:0"></td></tr>`).join('')}</tbody></table></div>
+      <details style="margin:10px 0"><summary class="small">Question-wise comments (optional)</summary>${a.questions.map((q) => `<label class="small">${esc(qno(q))}: ${esc(q.text.slice(0, 90))}${q.text.length > 90 ? '…' : ''}<input data-c="${esc(q.label || 'Q' + q.seq)}"></label>`).join('')}</details>
+      <div class="row"><label>Decision<select name="decision" required><option value="">Choose…</option><option value="ok">Fit — no resubmission</option><option value="resubmit">Resubmit with corrections</option></select></label>
+        <label>Resubmission due by<input type="date" name="due"></label></div>
+      <label>Remarks<textarea name="remarks" rows="2"></textarea></label><p><button>Submit review</button></p></form>` : ''}
+    ${d.reviews.length ? `<h3>Reviews</h3>${tbl(['Ver.', 'Reviewer', 'Decision', 'When', 'Summary'], d.reviews.map(revRow), '')}` : ''}
+    ${d.compliance.length ? `<h3>Compliance by the faculty</h3>${d.compliance.map((c) => `<div class="small"><b>v${c.version}</b> · ${fmt(c.created_at)}<ul class="tight">${c.items.map((x) => `<li>${esc(x.remark)} → <b>${esc(x.done)}</b>${x.ref ? ` (${esc(x.ref)})` : ''}</li>`).join('')}</ul></div>`).join('')}` : ''}
+    ${d.views.length ? `<details><summary class="small">Who opened the paper (${d.views.length})</summary><div class="small">${d.views.map((v) => `${esc(v.user_name)} · ${fmt(v.at)}`).join('<br>')}</div></details>` : ''}`;
+  const sub = el.querySelector('#msub');
+  if (sub) sub.onclick = act(async () => {
+    if (!(await ask('Submit this paper to the DQAC? It will be locked while it is reviewed.', { ok: 'Submit' }))) return;
+    await api('POST', `/assessments/${a.id}/submit-review`, {}); toast('Submitted for review'); reload();
+  });
+  const comp = el.querySelector('#mcomp');
+  if (comp) comp.onsubmit = act(async (e) => {
+    const f = e.target;
+    await api('POST', `/assessments/${a.id}/submit-review`, { declared: f.declared.checked,
+      compliance: d.remarks.map((r, i) => ({ remark: `${r.from}: ${r.text}`, done: f['done' + i].value, ref: f['ref' + i].value })) });
+    toast('Re-submitted for review'); reload();
+  });
+  const asg = el.querySelector('#massign');
+  if (asg) asg.onsubmit = act(async (e) => {
+    const ids = [...e.target.querySelectorAll('[name=r]:checked:not(:disabled)')].map((x) => +x.value);
+    await api('POST', `/assessments/${a.id}/assign`, { reviewer_ids: ids, due_date: e.target.due.value }); toast('Sent for review'); reload();
+  });
+  const apr = el.querySelector('#mapprove');
+  if (apr) apr.onclick = act(async () => {
+    if (!(await ask('Approve this question paper? It will be locked and the faculty can publish it.', { ok: 'Approve' }))) return;
+    await api('POST', `/assessments/${a.id}/hod-approve`, {}); toast('Paper approved'); reload();
+  });
+  const rev = el.querySelector('#mrev');
+  if (rev) rev.onsubmit = act(async (e) => {
+    const f = e.target;
+    await api('POST', `/reviews/${d.can.review}`, {
+      checklist: d.checklist.map((_, i) => ({ ok: f['ok' + i].value === '1', obs: f['obs' + i].value, action: f['act' + i].value })),
+      comments: [...f.querySelectorAll('[data-c]')].map((x) => ({ label: x.dataset.c, text: x.value })),
+      decision: f.decision.value, remarks: f.remarks.value, due_date: f.due.value,
+    });
+    toast('Review submitted'); reload();
+  });
+}
+
+async function viewMyReviews() {
+  const seq = nav_seq;
+  const list = await api('GET', '/reviews/mine');
+  if (seq !== nav_seq) return;
+  app.innerHTML = `<h1>Papers for review</h1><div class="card">${tbl(['Paper', 'Faculty', 'Version', 'Due', 'Status', ''], list.map((r) => `<tr><td>${esc(r.type)} ${r.number} · ${esc(r.subject_code)}</td><td>${esc(r.faculty)}</td>
+    <td>v${r.version}</td><td class="small">${esc(r.due_date || '–')}</td><td>${r.status === 'pending' ? '<span class="pill warn">To review</span>' : '<span class="pill ok">Done</span>'}</td>
+    <td class="right"><a class="btn ghost" href="#/a/${r.assessment_id}">${r.status === 'pending' ? 'Review' : 'Open'}</a></td></tr>`), 'No papers have been sent to you for review.')}</div>`;
+}
+
+async function viewTracker() {
+  const seq = nav_seq;
+  const list = await api('GET', '/moderation/tracker');
+  if (seq !== nav_seq) return;
+  const tick = (v, label) => (v ? `<span class="pill ok" title="${esc(fmt(v))}">${label}</span>` : '<span class="muted">–</span>');
+  app.innerHTML = `<h1>Question paper moderation tracker (A51-G)</h1>
+    <div class="card">${tbl(['Paper', 'Faculty', 'Initial', 'Moderated', 'Compliance', 'Re-submitted', 'HOD', 'Status', ''], list.map((x) => `<tr>
+      <td>${esc(x.type)} ${x.number} · ${esc(x.subject_code)}</td><td class="small">${esc(x.faculty)}</td>
+      <td>${tick(x.submitted_at, '✓')}</td><td>${tick(x.moderated_at, '✓')}</td><td>${tick(x.compliance_at, '✓')}</td><td>${x.version > 1 ? `<span class="pill ok">v${x.version}</span>` : '<span class="muted">–</span>'}</td>
+      <td>${tick(x.approved_at, '✓')}</td><td>${stagePill(x.stage)}${x.stage === 'review' && !x.reviewers ? ' <span class="pill warn">Assign reviewers</span>' : x.pending ? ` <span class="small muted">${x.pending} review(s) pending</span>` : ''}</td>
+      <td class="right"><a class="btn ghost" href="#/a/${x.id}">Open</a></td></tr>`), 'No papers from the department yet.')}</div>
+    <p class="small muted">Papers that need moderation: Mid Term, Sessional, Assignment and Hybrid. MCQ tests are published by the faculty directly.</p>`;
+}
+
+// Format A51 as one printable file: A submission, B moderation reports, C compliance, D re-submission, E HOD verification.
+function a51Doc(a, d, head) {
+  const sig = (id) => (d.signatures && d.signatures[id] ? `<img class="sig" src="${esc(d.signatures[id])}" alt="">` : '');
+  const meta = `<table class="meta"><tbody><tr><th>Subject</th><td>${esc(a.subject_name)} (${esc(a.subject_code)})</td><th>Exam</th><td>${esc(a.type)} ${a.number}</td></tr>
+    <tr><th>Faculty</th><td>${esc(a.faculty_name)}</td><th>Sections</th><td>${a.sections.map(esc).join(', ') || '–'}</td></tr></tbody></table>`;
+  if (!d.needed) return `<section class="doc">${head}<h1>Question paper moderation</h1>${meta}<p>MCQ tests do not go through moderation.</p></section>`;
+  const reviews = d.reviews.filter((r) => r.status === 'done');
+  return `<section class="doc">${head}<h1>A51 – Question paper preparation, moderation and approval</h1>${meta}
+    <h2>A51-A · Submission record</h2>
+    ${d.versions.length ? `<table><thead><tr><th>Version</th><th>Submitted on</th><th>By</th></tr></thead><tbody>${d.versions.map((v) => `<tr><td>v${v.version}${v.version > 1 ? ' (re-submission, A51-D)' : ''}</td><td>${fmt(v.created_at)}</td><td>${esc(a.faculty_name)}</td></tr>`).join('')}</tbody></table>` : '<p>Not submitted yet.</p>'}
+    <h2>A51-B · DQAC moderation reports</h2>
+    ${reviews.length ? reviews.map((r) => `<div class="qblock allow"><p><b>${esc(r.reviewer)}</b> · version v${r.version} · ${fmt(r.submitted_at)}</p>
+      <table><thead><tr><th>#</th><th>Moderation parameter</th><th>Status</th><th>Observation / deficiency</th><th>Action required</th></tr></thead><tbody>
+      ${d.checklist.map((c, i) => `<tr><td>${i + 1}</td><td>${esc(c)}</td><td>${r.checklist[i]?.ok ? 'Yes' : 'No'}</td><td>${esc(r.checklist[i]?.obs || '')}</td><td>${esc(r.checklist[i]?.action || '')}</td></tr>`).join('')}</tbody></table>
+      ${r.comments.length ? `<p class="small"><b>Question-wise comments:</b> ${r.comments.map((c) => `Q ${esc(c.label)}: ${esc(c.text)}`).join('; ')}</p>` : ''}
+      <table class="meta"><tbody><tr><th>Overall status</th><td>${r.decision === 'ok' ? 'Fit' : 'Resubmit required'}</td><th>Resubmission due</th><td>${esc(r.due_date || '–')}</td></tr>
+        <tr><th>Remarks</th><td colspan="3">${esc(r.remarks || '–')}</td></tr></tbody></table>
+      <p class="sign">${sig(r.reviewer_id)}<br>${esc(r.reviewer)}</p></div>`).join('') : '<p>No moderation report yet.</p>'}
+    <h2>A51-C · Faculty correction compliance</h2>
+    ${d.compliance.length ? d.compliance.map((c) => `<p class="small">Submitted with v${c.version} on ${fmt(c.created_at)}</p><table><thead><tr><th>#</th><th>Moderation remark</th><th>Compliance done by faculty</th><th>Question ref</th></tr></thead><tbody>
+      ${c.items.map((x, i) => `<tr><td>${i + 1}</td><td>${esc(x.remark)}</td><td>${esc(x.done)}</td><td>${esc(x.ref || '')}</td></tr>`).join('')}</tbody></table>
+      <p class="small">Faculty declaration: all corrections suggested during moderation have been incorporated in the revised question paper.</p>`).join('') : '<p>No corrections were asked for.</p>'}
+    <h2>A51-E · HOD verification</h2>
+    ${d.approved_at ? `<p>Verified and approved by <b>${esc(d.approved_by)}</b> on ${fmt(d.approved_at)}.</p><p class="sign">${sig(a.approved_by_id)}<br>${esc(d.approved_by)}, HOD</p>` : '<p>Awaiting HOD approval.</p>'}
+  </section>`;
 }

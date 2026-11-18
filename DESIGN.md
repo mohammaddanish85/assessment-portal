@@ -41,26 +41,26 @@ General rule: every rule has a sensible default, and the institute can change it
 - [x] Promotion by registrar at session end (promote / detained / left).
 
 ## 5. Faculty: creating a paper
-- [ ] Subject × section dropdown from allotment only; programme, semester, HOD, COs filled in.
+- [x] Subject × section dropdown from allotment only; programme, semester, HOD, COs filled in.
 - [ ] Paper structure (parts, questions, sub-parts, attempt any N, max marks) — built.
-- [ ] Two ways: live form, or Excel template (Part, Q.No, Sub-part, Type, Question, CO, RBTL, Marks,
+- [x] Two ways: live form, or Excel template (Part, Q.No, Sub-part, Type, Question, CO, RBTL, Marks,
       Options A–D, Correct, Model answer, Rubric "criterion=marks; …") → preview → create.
-- [ ] CO and RBTL from dropdowns; check: each CO used has at least one question at the CO's highest RBTL —
+- [x] CO and RBTL from dropdowns; check: each CO used has at least one question at the CO's highest RBTL —
       otherwise an alert for DQAC (DQAC may accept or ask for change).
-- [ ] AI suggests a rubric when the question/model answer is typed; faculty edits and saves.
-- [ ] Diagrams are explained in words (no drawing pad). CS only for now (no equations/circuits).
+- [x] AI suggests a rubric when the question/model answer is typed; faculty edits and saves.
+- [x] Diagrams are explained in words (no drawing pad). CS only for now (no equations/circuits).
 - [ ] Draft autosave; versions v1, v2… kept.
-- [ ] MCQ tests: no approval. Sessional, Mid Term, Assignment: DQAC + HOD approval before students see it.
+- [x] MCQ tests: no approval. Sessional, Mid Term, Assignment: DQAC + HOD approval before students see it.
 
 ## 6. Moderation (format A51, without A51-F dispatch and CoE)
-- [ ] A51-A Submit for review → paper locked; only author, assigned DQAC members, HOD can open; views logged.
-- [ ] A51-B Each assigned member (not the author) fills the 10-point checklist (Yes/No, observation, action)
+- [x] A51-A Submit for review → paper locked; only author, assigned DQAC members, HOD can open; views logged.
+- [x] A51-B Each assigned member (not the author) fills the 10-point checklist (Yes/No, observation, action)
       and decision (overall status, resubmit Y/N, due date, remarks).
-- [ ] A51-C Faculty answers each remark (what changed, question ref) + declaration; DQAC verifies.
-- [ ] A51-D Re-submission recorded as a new version with differences.
-- [ ] A51-E HOD verifies compliance and approves → paper can be published.
-- [ ] A51-G Master tracker on HOD dashboard (Initial → Moderated → Compliance → Re-submitted → HoD).
-- [ ] Signatures: image per person (own profile, or uploaded by HOD); printed only when that person
+- [x] A51-C Faculty answers each remark (what changed, question ref) + declaration; DQAC verifies.
+- [x] A51-D Re-submission recorded as a new version with differences.
+- [x] A51-E HOD verifies compliance and approves → paper can be published.
+- [x] A51-G Master tracker on HOD dashboard (Initial → Moderated → Compliance → Re-submitted → HoD).
+- [x] Signatures: image per person (own profile, or uploaded by HOD); printed only when that person
       approved/reviewed from their own login. Full A51 file as PDF on letterhead.
 
 ## 7. Student: taking a test

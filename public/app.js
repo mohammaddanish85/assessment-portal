@@ -93,7 +93,7 @@ function drawNav() {
   const p = user.perms || {};
   const links = user.role === 'owner' ? '<a href="#/">Institutes and requests</a>'
     : user.role === 'student' ? '<a href="#/">My assessments</a>'
-    : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}${p.students || p.manage ? '<a href="#/students">Students</a>' : ''}${(user.coordinates || []).length ? '<a href="#/my-section">My section</a>' : ''}${user.role === 'hod' ? '<a href="#/dqac">DQAC</a>' : ''}${p.create || p.reports !== 'own' ? '<a href="#/list">Assessments</a>' : ''}${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
+    : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}${p.students || p.manage ? '<a href="#/students">Students</a>' : ''}${(user.coordinates || []).length ? '<a href="#/my-section">My section</a>' : ''}${user.role === 'hod' ? '<a href="#/moderation">Moderation</a><a href="#/dqac">DQAC</a>' : ''}${user.dqac || user.role === 'hod' ? '<a href="#/reviews">Reviews</a>' : ''}${p.create || p.reports !== 'own' ? '<a href="#/list">Assessments</a>' : ''}${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
   nav.innerHTML = `${user.must_change ? '' : links}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
   document.getElementById('logout').onclick = act(async () => {
     await api('POST', '/logout');
@@ -192,7 +192,15 @@ function viewPassword() {
     <form id="f"><label>Current password<input name="current" type="password" required autocomplete="current-password"></label>
     <label>New password (min 8 characters)<input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
     <label>New password again<input name="again" type="password" minlength="8" required autocomplete="new-password"></label>
-    <button>Change password</button></form></div>`;
+    <button>Change password</button></form></div>
+    ${user.role !== 'student' && !user.must_change ? `<div class="card narrow"><h2>Your signature</h2><p class="small muted">Printed on moderation reports only where you reviewed or approved a paper from your own login. PNG or JPG, under 100 KB, on a white or transparent background.</p>
+      <div id="sigprev"></div><label>Upload signature<input type="file" id="sigfile" accept="image/png,image/jpeg"></label></div>` : ''}`;
+  const sigBox = document.getElementById('sigprev');
+  if (sigBox) {
+    const draw = (img) => (sigBox.innerHTML = img ? `<img src="${esc(img)}" alt="Your signature" style="max-height:60px;max-width:220px;border:1px solid var(--line);padding:4px;background:#fff">` : '<p class="small muted">No signature uploaded.</p>');
+    api('GET', '/signature').then((r) => draw(r.image)).catch(() => {});
+    document.getElementById('sigfile').onchange = imgPicker(100, async (img) => { try { await api('PUT', '/signature', { image: img }); draw(img); toast('Signature saved'); } catch (err) { toast(err.message, true); } });
+  }
   document.getElementById('f').onsubmit = act(async (e) => {
     const f = e.target;
     if (f.password.value !== f.again.value) throw new Error('The two new passwords do not match');
@@ -800,7 +808,8 @@ async function viewAssessment(id) {
   const sheet = await api('GET', `/assessments/${id}/marks`);
   if (seq !== nav_seq) return;
   app.innerHTML = `<div class="between"><h1>${title(a)}</h1>
-      ${a.status !== 'draft' ? '<span class="pill ok">Published</span>' : a.can.edit ? '<button id="pub">Publish to students</button>' : '<span class="pill warn">Draft</span>'}</div>
+      ${a.status !== 'draft' ? '<span class="pill ok">Published</span>' : a.can.edit && (!['Mid Term', 'Sessional', 'Assignment', 'Hybrid'].includes(a.type) || a.stage === 'approved') ? '<button id="pub">Publish to students</button>' : '<span class="pill warn">Not published</span>'}</div>
+    <div class="card" id="moderation"></div>
     <div class="card"><div class="muted">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${num(total)} marks ·
       Result release: <b>${a.release_mode === 'instant' ? 'Instant' : 'After faculty approval'}</b>${a.shuffle ? ' · Question order shuffled per student' : ''}${a.option_shuffle ? ' · MCQ options shuffled' : ''}${a.negative ? ` · Negative marking: ${({ 0.25: '¼', 0.33: '⅓', 0.5: '½', 1: 'full' })[a.negative] || a.negative} of the question's marks per wrong MCQ` : ''}</div>
       <div class="muted">Sections: ${a.sections.length ? a.sections.map(esc).join(', ') : 'All students'}</div>
@@ -831,6 +840,7 @@ async function viewAssessment(id) {
     toast('Assessment deleted');
     location.hash = '#/';
   });
+  drawModeration(document.getElementById('moderation'), a, () => viewAssessment(id)).catch((e) => toast(e.message, true));
   const pub = document.getElementById('pub');
   if (pub) pub.onclick = act(async () => {
     await api('POST', `/assessments/${id}/publish`);
@@ -1063,7 +1073,9 @@ async function viewPrint(kind, id) {
   } else {
     const a = await api('GET', `/assessments/${id}`);
     const total = paperMaxOf(a);
-    if (kind === 'paper' || kind === 'key') {
+    if (kind === 'a51') {
+      html = a51Doc(a, await api('GET', `/assessments/${id}/moderation`), head);
+    } else if (kind === 'paper' || kind === 'key') {
       html = paperDoc(a, await api('GET', '/settings'), kind === 'key');
     } else if (kind === 'sheets') {
       const done = a.attempts.filter((t) => t.status === 'published');
@@ -1268,6 +1280,8 @@ async function route() {
     if (page === 'students' && (p.students || p.manage)) return await viewStudents(+id || 0);
     if (page === 'my-section' && (user.coordinates || []).length) return await viewStudents(+id || 0);
     if (page === 'dqac' && user.role === 'hod') return await viewDqac();
+    if (page === 'moderation' && user.role === 'hod') return await viewTracker();
+    if (page === 'reviews') return await viewMyReviews();
     if (page === 'new' && p.create) return id ? await viewNew(decodeURIComponent(id)) : viewChooseType();
     if (page === 'print' && id) return await viewPrint(id, +location.hash.split('/')[3]);
     if (page === 'a' && id) return await viewAssessment(+id);

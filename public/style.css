@@ -201,3 +201,6 @@ table.parts input, table.parts select { margin: 0; }
 tr.bad-row td { background: var(--bad-bg); }
 details summary { cursor: pointer; }
 @media (max-width: 800px) { .setup { grid-template-columns: minmax(0, 1fr); } .stepper { position: static; display: flex; flex-wrap: wrap; gap: 4px; } .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.sign img.sig, img.sig { max-height: 48px; max-width: 200px; display: inline-block; }
+.paper .qblock.allow { break-inside: auto; }
