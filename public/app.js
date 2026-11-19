@@ -95,7 +95,7 @@ function drawNav() {
     : user.role === 'student' ? '<a href="#/">My assessments</a>'
     : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}${p.students || p.manage ? '<a href="#/students">Students</a>' : ''}${(user.coordinates || []).length ? '<a href="#/my-section">My section</a>' : ''}${user.role === 'hod' ? '<a href="#/moderation">Moderation</a><a href="#/dqac">DQAC</a>' : ''}${user.dqac || user.role === 'hod' ? '<a href="#/reviews">Reviews</a>' : ''}${p.create || p.reports !== 'own' ? '<a href="#/list">Assessments</a>' : ''}${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
   const rep = user.role !== 'student' && user.role !== 'owner' && (p.reports === 'institute' || p.manage || user.role === 'hod' || (user.coordinates || []).length);
-  nav.innerHTML = `${user.must_change ? '' : links}${!user.must_change && rep ? '<a href="#/reports">Reports</a>' : ''}${user.must_change || user.role === 'owner' ? '' : '<button class="bell" id="bell" aria-label="Notifications">🔔<b id="belln" hidden></b></button>'}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
+  nav.innerHTML = `${user.must_change ? '' : links}${!user.must_change && user.role !== 'student' && user.role !== 'owner' && (p.create || rep) ? '<a href="#/sheets">Evaluation sheets</a>' : ''}${!user.must_change && rep ? '<a href="#/reports">Reports</a>' : ''}${user.must_change || user.role === 'owner' ? '' : '<button class="bell" id="bell" aria-label="Notifications">🔔<b id="belln" hidden></b></button>'}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
   const bell = document.getElementById('bell');
   if (bell) {
     const load = () => api('GET', '/notifications').then((n) => { const b = document.getElementById('belln'); if (b) { b.hidden = !n.unread; b.textContent = n.unread; } return n; }).catch(() => null);
@@ -1419,6 +1419,8 @@ async function route() {
     if (page === 'moderation' && user.role === 'hod') return await viewTracker();
     if (page === 'reviews') return await viewMyReviews();
     if (page === 'reports') return await viewReports();
+    if (page === 'sheets') return await viewSheets();
+    if (page === 'sheet' && id) return await viewSheet(id);
     if (page === 'new' && p.create) return id ? await viewNew(decodeURIComponent(id)) : viewChooseType();
     if (page === 'print' && id) return await viewPrint(id, +location.hash.split('/')[3]);
     if (page === 'a' && id) return await viewAssessment(+id);

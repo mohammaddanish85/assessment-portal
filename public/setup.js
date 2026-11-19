@@ -181,7 +181,39 @@ async function viewInstSetup(step = 'profile') {
         <div class="row"><label>Signature lines on exam papers (separate with |)<input name="sign_exam" value="${esc(F.sign_exam ?? 'Faculty Name and Sign. | HOD Sign.')}"></label>
           <label>Signature lines on assignments (separate with |)<input name="sign_asg" value="${esc(F.sign_asg || '')}" placeholder="Leave empty for none"></label></div>
         <label class="choice" style="max-width:360px"><input type="checkbox" name="roll"${F.roll === false ? '' : ' checked'}> Print "Roll No. ……" on exam papers</label>
+        <h3 style="margin-top:14px">Internal marks (theory evaluation sheet)</h3>
+        <p class="small muted" style="margin-top:0">Each component is scaled to its weight: marks ÷ maximum × weight. "Number 0" means all of that type together (e.g. every assignment). Manual components (like attendance) are typed in by the faculty.</p>
+        <table id="intparts"><thead><tr><th>Component</th><th>Taken from</th><th>Number</th><th>Weight</th><th></th></tr></thead><tbody></tbody></table>
+        <p><button type="button" class="ghost small" id="addpartint">+ Add component</button> <span class="small" id="inttotal"></span></p>
+        <label style="max-width:320px">Round the actual internal marks<select name="int_round"><option value="nearest"${(S.internal?.round || 'nearest') === 'nearest' ? ' selected' : ''}>To the nearest whole number</option><option value="up"${S.internal?.round === 'up' ? ' selected' : ''}>Up to the next whole number</option><option value="none"${S.internal?.round === 'none' ? ' selected' : ''}>Keep two decimals</option></select></label>
+        <h3 style="margin-top:14px">Lab rubric (lab evaluation sheet)</h3>
+        <table id="labcrit"><thead><tr><th>Code</th><th>Criterion</th><th>Marks</th><th></th></tr></thead><tbody></tbody></table>
+        <p><button type="button" class="ghost small" id="addcrit">+ Add criterion</button></p>
+        <div class="row"><label style="max-width:220px">Experiments per lab (max)<input name="lab_exps" type="number" min="1" max="20" value="${S.lab?.experiments ?? 10}"></label>
+          <label style="max-width:220px">Lab final marks (scale to)<input name="lab_final" type="number" min="1" max="100" value="${S.lab?.final ?? 15}"></label></div>
         <p><button>Save profile</button></p></form>`;
+    const SRC = ['Assignment', 'Sessional', 'Mid Term', 'MCQ Test', 'Hybrid', 'manual'];
+    const ip = document.querySelector('#intparts tbody');
+    const intTotal = () => { document.getElementById('inttotal').textContent = `Total internal marks: ${[...ip.querySelectorAll('[data-w]')].reduce((m, x) => m + (+x.value || 0), 0)}`; };
+    const partRowI = (p = { label: '', source: 'Sessional', number: 1, weight: 5 }) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><input data-l value="${esc(p.label)}" style="margin:0"></td><td><select data-src style="margin:0">${SRC.map((x) => `<option value="${x}"${x === p.source ? ' selected' : ''}>${x === 'manual' ? 'Typed in by faculty' : x}</option>`).join('')}</select></td>
+        <td><input data-n type="number" min="0" max="9" value="${p.number}" style="margin:0;width:70px"></td><td><input data-w type="number" step="0.5" min="0.5" value="${p.weight}" style="margin:0;width:80px"></td><td><button type="button" class="ghost small">✕</button></td>`;
+      tr.querySelector('button').onclick = () => { tr.remove(); intTotal(); };
+      tr.querySelector('[data-w]').oninput = intTotal;
+      ip.append(tr);
+    };
+    (S.internal?.parts || []).forEach(partRowI); intTotal();
+    document.getElementById('addpartint').onclick = () => { partRowI(); intTotal(); };
+    const lc = document.querySelector('#labcrit tbody');
+    const critRow = (c = { code: '', label: '', max: 5 }) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><input data-cc value="${esc(c.code)}" style="margin:0;width:70px"></td><td><input data-cl value="${esc(c.label)}" style="margin:0"></td><td><input data-cm type="number" step="0.5" min="0.5" value="${c.max}" style="margin:0;width:80px"></td><td><button type="button" class="ghost small">✕</button></td>`;
+      tr.querySelector('button').onclick = () => tr.remove();
+      lc.append(tr);
+    };
+    (S.lab?.criteria || []).forEach(critRow);
+    document.getElementById('addcrit').onclick = () => critRow();
     const drawLogo = () => {
       const p = document.getElementById('logoprev');
       p.innerHTML = logo ? `<img src="${esc(logo)}" alt="Logo" style="max-height:56px;max-width:150px"> <button type="button" class="ghost small" id="rmlogo">Remove</button>` : '<span class="muted small">No logo</span>';
@@ -203,7 +235,9 @@ async function viewInstSetup(step = 'profile') {
         institute: g.institute.value, line: g.line.value, logo, letterhead: lhead,
         format: { tax_exam: g.tax_exam.value, tax_exam_style: g.tax_exam_style.value, tax_code: g.tax_code.value, tax_asg: g.tax_asg.value,
           tax_asg_style: g.tax_asg_style.value, sign_exam: g.sign_exam.value, sign_asg: g.sign_asg.value, roll: g.roll.checked },
-        settings: { session: g.session.value, default_password: g.default_password.value, pass_percent: +g.pass_percent.value, rank_scope: g.rank_scope.value, code_minutes: +g.code_minutes.value },
+        settings: { session: g.session.value, default_password: g.default_password.value, pass_percent: +g.pass_percent.value, rank_scope: g.rank_scope.value, code_minutes: +g.code_minutes.value,
+          internal: { round: g.int_round.value, parts: [...document.querySelectorAll('#intparts tbody tr')].map((tr) => ({ label: tr.querySelector('[data-l]').value, source: tr.querySelector('[data-src]').value, number: +tr.querySelector('[data-n]').value, weight: +tr.querySelector('[data-w]').value })) },
+          lab: { experiments: +g.lab_exps.value, final: +g.lab_final.value, criteria: [...document.querySelectorAll('#labcrit tbody tr')].map((tr) => ({ code: tr.querySelector('[data-cc]').value, label: tr.querySelector('[data-cl]').value, max: +tr.querySelector('[data-cm]').value })) } },
       });
       user.institute_name = g.institute.value.trim();
       drawNav();
@@ -586,4 +620,209 @@ async function viewReports() {
     });
   });
   if (sections.length) document.getElementById('frs').requestSubmit();
+}
+
+// ---------- evaluation sheets: TES (theory internal marks) and LES (lab) ----------
+
+async function viewSheets() {
+  const seq = nav_seq;
+  const list = await api('GET', '/sheets');
+  if (seq !== nav_seq) return;
+  app.innerHTML = `<h1>Evaluation sheets</h1><p class="muted">Theory subjects open the theory evaluation sheet (internal marks); lab subjects open the lab evaluation sheet.</p>
+    <div class="card">${tbl(['Subject', 'Section', 'Type', 'Faculty', ''], list.map((x) => `<tr><td>${esc(x.code)} · ${esc(x.subject)}</td><td>${esc(x.section)}</td>
+      <td>${esc(x.type || 'Theory')}</td><td>${esc(x.faculty)}${x.mine ? ' <span class="pill">You</span>' : ''}</td>
+      <td class="right"><a class="btn ghost" href="#/sheet/${x.subject_id}-${x.section_id}">Open ${x.type === 'Lab' ? 'LES' : 'TES'}</a></td></tr>`), 'No subjects are allotted yet. The institute admin sets this up under Subject allotment.')}</div>`;
+}
+
+const sheetTitle = (d, what) => `<table class="meta sheet-meta"><tbody><tr><th>Program</th><td>${esc(d.programme)}</td><th>Semester</th><td>${d.section.semester ?? ''}</td><th>Session</th><td>${esc(d.session || '')}</td></tr>
+  <tr><th>Subject</th><td>${esc(d.subject.name)} (${esc(d.subject.code)})</td><th>Section</th><td>${esc(d.section.name)}</td><th>Faculty</th><td>${esc(d.faculty)}</td></tr></tbody></table>
+  <h2 style="text-align:center;margin:10px 0">${what}</h2>`;
+
+async function viewSheet(key) {
+  const [subject, section] = String(key).split('-').map(Number);
+  const seq = nav_seq;
+  const list = await api('GET', '/sheets');
+  if (seq !== nav_seq) return;
+  const row = list.find((x) => x.subject_id === subject && x.section_id === section);
+  return row && row.type === 'Lab' ? viewLabSheet(subject, section) : viewTheorySheet(subject, section);
+}
+
+async function viewTheorySheet(subject, section) {
+  const seq = nav_seq;
+  const [d, inst] = await Promise.all([api('GET', `/sheets/theory?subject=${subject}&section=${section}`), api('GET', '/settings')]);
+  if (seq !== nav_seq) return;
+  // Header rows: component → its papers → CO columns.
+  const head1 = [], head2 = [];
+  d.parts.forEach((p, pi) => {
+    if (p.source === 'manual') { head1.push(`<th rowspan="2">${esc(p.label)}<br>(${num(p.weight)})</th>`); return; }
+    p.items.forEach((it) => {
+      const span = it.cos.length ? it.cos.length + 1 : 1;
+      head1.push(`<th colspan="${span}"${it.cos.length ? '' : ' rowspan="2"'}>${esc(it.title)}${it.cos.length ? '' : `<br>(${num(it.max)})`}</th>`);
+      if (it.cos.length) { it.cos.forEach((c) => head2.push(`<th>${esc(c)}</th>`)); head2.push(`<th>Total<br>(${num(it.max)})</th>`); }
+    });
+    if (!p.items.length) head1.push(`<th rowspan="2" class="muted">${esc(p.label)}<br><span class="small">not held yet</span></th>`);
+    if (p.items.length > 1) head1.push(`<th rowspan="2">${esc(p.label)} total<br>(${num(p.max)})</th>`);
+    head1.push(`<th rowspan="2">${esc(p.label)}<br>scaled (${num(p.weight)})</th>`);
+  });
+  const cell = (v) => (v === null || v === undefined ? '<span class="muted">AB</span>' : num(v));
+  const body = d.students.map((s, i) => {
+    const tds = [];
+    d.parts.forEach((p, pi) => {
+      const c = s.cells[pi];
+      if (p.source === 'manual') {
+        tds.push(`<td>${d.can_edit ? `<input type="number" step="0.5" min="0" max="${p.weight}" data-man="${esc(p.label)}" data-s="${s.id}" value="${c.raw ?? ''}" class="cellin">` : cell(c.raw)}</td>`);
+        return;
+      }
+      p.items.forEach((it, k) => {
+        const g = c.items ? c.items[k] : null;
+        if (it.cos.length) it.cos.forEach((co) => tds.push(`<td>${g ? num(g.co[co] ?? 0) : '<span class="muted">AB</span>'}</td>`));
+        tds.push(`<td>${g ? num(g.total) : '<span class="muted">AB</span>'}</td>`);
+      });
+      if (!p.items.length) tds.push('<td class="muted">–</td>');
+      if (p.items.length > 1) tds.push(`<td>${cell(c.raw)}</td>`);
+      tds.push(`<td><b>${cell(c.scaled)}</b></td>`);
+    });
+    return `<tr><td>${i + 1}</td><td class="nowrap">${esc(s.univ_roll || '')}</td><td class="nowrap">${esc(s.college_roll || '')}</td><td class="left">${esc(s.name)}</td>${tds.join('')}
+      <td><b>${num(s.actual)}</b></td><td>${d.can_edit ? `<input type="number" step="0.5" data-mod="${s.id}" value="${s.moderation || ''}" class="cellin">` : num(s.moderation)}</td><td><b>${num(s.final)}</b></td></tr>`;
+  });
+  app.innerHTML = `<p class="between no-print"><a href="#/sheets">← Evaluation sheets</a><span>${d.can_edit ? '<button type="button" id="save">Save attendance and moderation</button> ' : ''}<button type="button" class="ghost" id="xls">Download Excel</button> <button type="button" class="ghost" onclick="window.print()">Print / Save as PDF</button></span></p>
+    <div class="paper"><section class="doc wide">${letterhead(inst)}${sheetTitle(d, 'Theory Evaluation Sheet (internal marks)')}
+    <div class="scroll"><table class="rank tes"><thead><tr><th rowspan="2">S.No.</th><th rowspan="2">University<br>Roll No.</th><th rowspan="2">College<br>Roll No.</th><th rowspan="2">Student name</th>${head1.join('')}
+      <th rowspan="2">Actual internal<br>(${num(d.total)})</th><th rowspan="2">Moderation</th><th rowspan="2">Final marks<br>(${num(d.total)})</th></tr><tr>${head2.join('')}</tr></thead>
+      <tbody>${body.join('') || '<tr><td colspan="9">No students in this section.</td></tr>'}</tbody></table></div>
+    <p class="small">Marks come from the results approved in COGNEXA; "AB" = no approved result. Scaled = marks ÷ maximum × weight. Actual internal is rounded ${d.round === 'up' ? 'up' : d.round === 'none' ? 'to two decimals' : 'to the nearest whole number'}; Final = Actual + Moderation (0 to ${num(d.total)}).</p>
+    <div class="signs"><b>Faculty Name and Sign.</b><b>HOD Sign.</b></div></section></div>`;
+  const save = document.getElementById('save');
+  if (save) save.onclick = act(async () => {
+    const rows = d.students.map((s) => ({ student_id: s.id, moderation: app.querySelector(`[data-mod="${s.id}"]`).value,
+      manual: Object.fromEntries([...app.querySelectorAll(`[data-man][data-s="${s.id}"]`)].map((x) => [x.dataset.man, x.value])) }));
+    await api('PUT', '/sheets/entries', { subject, section, rows });
+    toast('Saved'); viewTheorySheet(subject, section);
+  });
+  document.getElementById('xls').onclick = act(async () => {
+    await loadXLSX();
+    const h1 = ['S.No.', 'University Roll No.', 'College Roll No.', 'Student Name'], h2 = ['', '', '', ''];
+    d.parts.forEach((p) => {
+      if (p.source === 'manual') { h1.push(`${p.label} (${p.weight})`); h2.push(''); return; }
+      p.items.forEach((it) => { if (it.cos.length) { it.cos.forEach((c, k) => { h1.push(k ? '' : it.title); h2.push(c); }); h1.push(it.cos.length ? '' : it.title); h2.push(`Total (${it.max})`); } else { h1.push(`${it.title} (${it.max})`); h2.push(''); } });
+      if (p.items.length > 1) { h1.push(`${p.label} Total (${p.max})`); h2.push(''); }
+      h1.push(`${p.label} Scaled Down (${p.weight})`); h2.push('');
+    });
+    h1.push(`Actual Internal Marks (${d.total})`, 'Moderation', `Final Marks (${d.total})`); h2.push('', '', '');
+    const rows = d.students.map((s, i) => {
+      const r = [i + 1, s.univ_roll || '', s.college_roll || '', s.name];
+      d.parts.forEach((p, pi) => {
+        const c = s.cells[pi];
+        if (p.source === 'manual') { r.push(c.raw ?? ''); return; }
+        p.items.forEach((it, k) => { const g = c.items ? c.items[k] : null; it.cos.forEach((co) => r.push(g ? g.co[co] ?? 0 : 'AB')); r.push(g ? g.total : 'AB'); });
+        if (p.items.length > 1) r.push(c.raw ?? 'AB');
+        r.push(c.scaled ?? 'AB');
+      });
+      r.push(s.actual, s.moderation, s.final);
+      return r;
+    });
+    const top = [`Program: ${d.programme}`, '', '', `Semester: ${d.section.semester ?? ''}`, '', `Session: ${d.session || ''}`, '', `Subject: ${d.subject.code} ${d.subject.name}`, '', `Section: ${d.section.name}`];
+    const ws = XLSX.utils.aoa_to_sheet([top, h1, h2, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'TES');
+    XLSX.writeFile(wb, `TES_${d.subject.code}_${d.section.name}`.replace(/[^\w-]+/g, '_') + '.xlsx');
+  });
+}
+
+const LAB_LEVELS = ['Excellent (90-100%)', 'Very Good (80-89%)', 'Good (60-79%)', 'Average (40-59%)', 'Poor (0-39%)'];
+// Level descriptions of the institute's lab rubric (format LES), by criterion code.
+const LAB_DESC = {
+  R1: ['All the algorithms or procedures are written clearly.', 'Most of algorithms or procedures are written clearly.', 'Some of algorithms or procedures are written clearly.', 'Few of algorithms or procedures are written clearly.', 'Algorithms or procedures are written but with several errors.'],
+  R2: ['Complete code/setup with no error, consistent naming, well planned; runs properly and gives all results.', 'Complete code/setup with no error, well planned; runs properly but does not give all results.', 'Complete code/setup with no error but naming/setup not proper; runs but does not give all results.', 'Code/setup with some errors, not properly planned; runs after rectifying errors, not all results.', 'Code/setup with errors, not planned; runs only after rectifying errors, not all results.'],
+  R3: ['Demonstrates good knowledge of both theory and experimental procedure.', 'Demonstrates good knowledge of either theory or experimental procedure.', 'Has a fair idea of both theory and experiments but confused in experimental procedure.', 'Has some idea of theory but does not know the experimental procedure.', 'Confused in both theory and experimental procedure.'],
+  R4: ['Results explicitly interpreted and compared with literature/lecture concepts; conclusion coherent, proper English.', 'Results explicitly interpreted and compared; conclusion coherent with some errors in English.', 'Superficial conclusions; interpretation not explicit; some spelling or grammatical errors.', 'Results interpreted but not explicitly; conclusions not logical, with spelling or grammatical errors.', 'Conclusions are not logical and/or do not agree with data presented.'],
+};
+
+async function viewLabSheet(subject, section, expId = null) {
+  const seq = nav_seq;
+  const [d, inst] = await Promise.all([api('GET', `/sheets/lab?subject=${subject}&section=${section}`), api('GET', '/settings')]);
+  if (seq !== nav_seq) return;
+  const C = d.lab.criteria;
+  const cur = d.experiments.find((e) => e.id === expId) || d.experiments[d.experiments.length - 1] || null;
+  const again = (id) => viewLabSheet(subject, section, id ?? cur?.id);
+  app.innerHTML = `<p class="between no-print"><a href="#/sheets">← Evaluation sheets</a><span><button type="button" class="ghost" id="xls">Download Excel</button> <button type="button" class="ghost" onclick="window.print()">Print / Save as PDF</button></span></p>
+    ${d.can_edit ? `<div class="card no-print"><div class="between"><h2>Enter marks</h2>
+        ${d.experiments.length < d.lab.experiments ? '<button type="button" class="ghost small" id="addexp">+ Add experiment</button>' : ''}</div>
+      ${d.experiments.length ? `<div class="row"><label>Experiment<select id="exppick">${d.experiments.map((e) => `<option value="${e.id}"${e.id === cur.id ? ' selected' : ''}>Experiment-${e.no}${e.title ? ` · ${esc(e.title)}` : ''}</option>`).join('')}</select></label>
+          <label>Title<input id="exptitle" value="${esc(cur.title || '')}"></label><label style="max-width:190px">Date<input type="date" id="expdate" value="${esc(cur.held_on || '')}"></label></div>
+        <div class="scroll"><table class="rank"><thead><tr><th>Roll no</th><th>Name</th>${C.map((c) => `<th>${esc(c.code)} (${num(c.max)})</th>`).join('')}</tr></thead><tbody>
+          ${d.students.map((s) => `<tr><td class="nowrap">${esc(s.college_roll || s.univ_roll || '')}</td><td class="left">${esc(s.name)}</td>${C.map((c) => `<td><input type="number" step="0.5" min="0" max="${c.max}" class="cellin" data-s="${s.id}" data-c="${esc(c.code)}" value="${s.marks[cur.id]?.[c.code] ?? ''}"></td>`).join('')}</tr>`).join('')}
+        </tbody></table></div>
+        <p class="between"><span class="small"><button type="button" class="ghost small" id="deltexp">Delete this experiment</button> <button type="button" class="ghost small" id="labtpl">Download marks template</button>
+          <label class="small" style="display:inline-block;margin:0">Fill from Excel <input type="file" id="labfile" accept=".xlsx,.xls,.csv" style="display:inline-block;width:auto"></label></span>
+          <button type="button" id="savemarks">Save Experiment-${cur.no}</button></p>` : '<p class="muted">Add the first experiment to start entering marks.</p>'}</div>` : ''}
+    <div class="paper"><section class="doc wide">${letterhead(inst)}${sheetTitle(d, 'Continuous Lab Evaluation Sheet')}
+      <div class="scroll"><table class="rank les"><thead><tr><th colspan="4">Experiment No. / Date</th>${d.experiments.map((e) => `<th colspan="${C.length + 1}">Experiment-${e.no}${e.held_on ? `<br><span class="small">${esc(e.held_on)}</span>` : ''}</th>`).join('')}
+        <th rowspan="2">Avg (${num(d.exp_max)})</th><th rowspan="2">Scaled to (${num(d.lab.final)})</th><th rowspan="2">Moderation</th><th rowspan="2">FINAL (${num(d.lab.final)})</th></tr>
+        <tr><th>S.No</th><th>University Roll No.</th><th>Institute Roll No.</th><th>Name</th>${d.experiments.map(() => `${C.map((c) => `<th>${esc(c.code)}<br>(${num(c.max)})</th>`).join('')}<th>Total<br>(${num(d.exp_max)})</th>`).join('')}</tr></thead>
+      <tbody>${d.students.map((s, i) => `<tr><td>${i + 1}</td><td class="nowrap">${esc(s.univ_roll || '')}</td><td class="nowrap">${esc(s.college_roll || '')}</td><td class="left">${esc(s.name)}</td>
+        ${d.experiments.map((e, k) => `${C.map((c) => `<td>${s.marks[e.id] ? num(s.marks[e.id][c.code] ?? 0) : '<span class="muted">AB</span>'}</td>`).join('')}<td><b>${s.totals[k] === null ? '<span class="muted">AB</span>' : num(s.totals[k])}</b></td>`).join('')}
+        <td>${s.avg === null ? '–' : num(s.avg)}</td><td>${s.scaled === null ? '–' : num(s.scaled)}</td>
+        <td>${d.can_edit ? `<input type="number" step="0.5" class="cellin" data-mod="${s.id}" value="${s.moderation || ''}">` : num(s.moderation)}</td><td><b>${s.final === null ? '–' : num(s.final)}</b></td></tr>`).join('')}</tbody></table></div>
+      ${d.can_edit ? '<p class="no-print"><button type="button" class="ghost small" id="savemod">Save moderation</button></p>' : ''}
+      <h3>Evaluation rubrics</h3><div class="scroll"><table class="rank"><thead><tr><th>Level</th>${C.map((c) => `<th>${esc(c.code)}: ${esc(c.label)}</th>`).join('')}</tr></thead>
+        <tbody>${LAB_LEVELS.map((l, li) => `<tr><td class="nowrap">${l}</td>${C.map((c) => `<td class="small left">${LAB_DESC[c.code] ? `${esc(LAB_DESC[c.code][li])} ` : ''}<span class="muted">(${Math.round((c.max * +l.match(/\((\d+)/)[1]) / 100 * 2) / 2}–${Math.round((c.max * +(l.match(/-(\d+)%/)?.[1] || 100)) / 100 * 2) / 2} marks)</span></td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <p class="small">An experiment the student missed counts as 0 in the average. Scaled = Avg ÷ ${num(d.exp_max)} × ${num(d.lab.final)}; Final = Scaled + Moderation, rounded.</p>
+      <div class="signs"><b>Faculty Name and Sign.</b><b>HOD Sign.</b></div></section></div>`;
+  if (d.can_edit) {
+    const add = document.getElementById('addexp');
+    if (add) add.onclick = act(async () => { await api('POST', '/sheets/lab/experiments', { subject, section, title: '', held_on: new Date().toISOString().slice(0, 10) }); toast('Experiment added'); const n = await api('GET', `/sheets/lab?subject=${subject}&section=${section}`); again(n.experiments[n.experiments.length - 1].id); });
+    const pick = document.getElementById('exppick');
+    if (pick) {
+      pick.onchange = () => again(+pick.value);
+      document.getElementById('savemarks').onclick = act(async () => {
+        await api('PUT', `/sheets/lab/experiments/${cur.id}`, { title: document.getElementById('exptitle').value, held_on: document.getElementById('expdate').value });
+        const rows = d.students.map((s) => ({ student_id: s.id, marks: Object.fromEntries(C.map((c) => [c.code, app.querySelector(`[data-s="${s.id}"][data-c="${c.code}"]`).value])) }));
+        await api('PUT', '/sheets/lab/marks', { experiment_id: cur.id, rows });
+        toast(`Experiment-${cur.no} saved`); again();
+      });
+      document.getElementById('deltexp').onclick = act(async () => {
+        if (!(await ask(`Delete Experiment-${cur.no} and its marks?`, { ok: 'Delete' }))) return;
+        await api('DELETE', `/sheets/lab/experiments/${cur.id}`); again(null);
+      });
+      document.getElementById('labtpl').onclick = act(async () => {
+        await loadXLSX();
+        const ws = XLSX.utils.aoa_to_sheet([['University roll no', 'College roll no', 'Name', ...C.map((c) => c.code)], ...d.students.map((s) => [s.univ_roll || '', s.college_roll || '', s.name, ...C.map((c) => s.marks[cur.id]?.[c.code] ?? '')])]);
+        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, `Experiment-${cur.no}`);
+        XLSX.writeFile(wb, `LES_${d.subject.code}_${d.section.name}_Exp${cur.no}`.replace(/[^\w-]+/g, '_') + '.xlsx');
+      });
+      document.getElementById('labfile').onchange = act(async (e) => {
+        const file = e.target.files[0]; if (!file) return;
+        await loadXLSX();
+        const wb = XLSX.read(await file.arrayBuffer());
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: false }).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [slug(k), String(v).trim()])));
+        let n = 0;
+        for (const r of rows) {
+          const s = d.students.find((x) => (r.universityrollno && x.univ_roll === r.universityrollno) || (r.collegerollno && x.college_roll === r.collegerollno));
+          if (!s) continue;
+          C.forEach((c) => { const inp = app.querySelector(`[data-s="${s.id}"][data-c="${c.code}"]`); if (inp && slug(c.code) in r) inp.value = r[slug(c.code)]; });
+          n++;
+        }
+        e.target.value = '';
+        toast(`${n} student row(s) filled. Check, then save.`);
+      });
+    }
+    const sm = document.getElementById('savemod');
+    if (sm) sm.onclick = act(async () => {
+      await api('PUT', '/sheets/entries', { subject, section, rows: d.students.map((s) => ({ student_id: s.id, moderation: app.querySelector(`[data-mod="${s.id}"]`).value })) });
+      toast('Moderation saved'); again();
+    });
+  }
+  document.getElementById('xls').onclick = act(async () => {
+    await loadXLSX();
+    const top = [`Program: ${d.programme}`, '', '', `Semester: ${d.section.semester ?? ''}`, '', `Session: ${d.session || ''}`, '', `Subject: ${d.subject.code} ${d.subject.name}`, '', `Section: ${d.section.name}`];
+    const h1 = ['Experiment No. / Date', '', '', ''], h2 = ['S.No', 'University Roll No.', 'Institute Roll No.', 'Name'];
+    d.experiments.forEach((e) => { h1.push(`Experiment-${e.no}${e.held_on ? ` (${e.held_on})` : ''}`, ...C.map(() => '')); h2.push(...C.map((c) => `${c.code} (${c.max})`), `Total (${d.exp_max})`); });
+    h1.push(`Avg (${d.exp_max})`, `Scale Down to (${d.lab.final})`, 'Moderation', `FINAL (${d.lab.final})`); h2.push('', '', '', '');
+    const rows = d.students.map((s, i) => [i + 1, s.univ_roll || '', s.college_roll || '', s.name, ...d.experiments.flatMap((e, k) => [...C.map((c) => (s.marks[e.id] ? s.marks[e.id][c.code] ?? 0 : 'AB')), s.totals[k] ?? 'AB']), s.avg ?? '', s.scaled ?? '', s.moderation, s.final ?? '']);
+    const legend = [[], ['Evaluation Rubrics'], ...C.map((c) => [`${c.code}: ${c.label} (${c.max})`])];
+    const ws = XLSX.utils.aoa_to_sheet([top, ['Continuous Lab Evaluation Sheet'], h1, h2, ...rows, ...legend]);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'LES');
+    XLSX.writeFile(wb, `LES_${d.subject.code}_${d.section.name}`.replace(/[^\w-]+/g, '_') + '.xlsx');
+  });
 }

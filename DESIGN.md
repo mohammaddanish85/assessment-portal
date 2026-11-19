@@ -85,4 +85,8 @@ General rule: every rule has a sensible default, and the institute can change it
 - [x] HOD: A51 tracker and file, A53 rank sheet (CT-wise and aggregate, Total, %, Pass/Fail at 40%, Rank),
       section toppers, pending work.
 - [x] Admin/Director: institute summary, department-wise.
-- [ ] Later: CO attainment levels (institute formula), theory/lab evaluation sheets (internal marks), lab marks.
+- [x] Theory evaluation sheet (TES): internal marks from approved results (Assignments → 5, Sessional-1 → 5 with CO columns,
+      Sessional-2 → 10 with CO columns, Attendance → 5 typed in, total 25), rounding, moderation, final; scheme editable per institute; Excel and print.
+- [x] Lab evaluation sheet (LES): up to 10 experiments, rubric R1 (6), R3 (8), R4 (6) = 20 with level descriptions, average,
+      scale to 15, moderation, final; rubric editable per institute; marks by grid or Excel; Excel and print.
+- [ ] Later: CO attainment levels (institute formula).

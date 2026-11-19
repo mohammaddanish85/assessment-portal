@@ -254,6 +254,33 @@ export const SCHEMA = [
     created_at TEXT NOT NULL,
     read_at TEXT
   )`,
+  // Internal marks (theory and lab evaluation sheets): what the faculty enters by hand.
+  `CREATE TABLE IF NOT EXISTS internal_entries (
+    institute_id INTEGER NOT NULL,
+    subject_id INTEGER NOT NULL,
+    section_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    manual_json TEXT NOT NULL DEFAULT '{}',
+    moderation REAL NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    UNIQUE (subject_id, section_id, student_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS lab_experiments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    subject_id INTEGER NOT NULL,
+    section_id INTEGER NOT NULL,
+    no INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    held_on TEXT,
+    UNIQUE (subject_id, section_id, no)
+  )`,
+  `CREATE TABLE IF NOT EXISTS lab_marks (
+    experiment_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    marks_json TEXT NOT NULL,
+    UNIQUE (experiment_id, student_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     institute_id INTEGER,

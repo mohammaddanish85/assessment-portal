@@ -241,3 +241,14 @@ textarea.code { font: 14px/1.5 ui-monospace, "Cascadia Code", Consolas, monospac
 table.rank th, table.rank td { text-align: center; font-size: 13px; padding: 6px; }
 table.rank td:nth-child(3) { text-align: left; }
 .signs { display: flex; justify-content: space-between; margin-top: 40px; }
+/* ---- evaluation sheets ---- */
+.cellin { width: 64px; margin: 0; padding: 4px 6px; text-align: center; }
+table.tes th, table.les th { font-size: 12px; vertical-align: middle; border: 1px solid var(--line); }
+table.tes td, table.les td { border: 1px solid var(--line); }
+td.left { text-align: left !important; }
+.sheet-meta th { white-space: nowrap; }
+.paper .doc.wide { max-width: none; }
+@page wide { size: A4 landscape; }
+@media print { .doc.wide { page: wide; } .cellin { border: 0; width: auto; } }
+main:has(.doc.wide) { max-width: 1440px; }
+table.tes td.left, table.les td.left { min-width: 130px; }

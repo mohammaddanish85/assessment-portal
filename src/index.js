@@ -167,7 +167,46 @@ const NO_START_CODE = ['Assignment']; // assignments are written over days, from
 
 // ---------- institute settings ----------
 
-const SETTING_DEFAULTS = { session: '', default_password: '', pass_percent: 40, rank_scope: 'section', code_minutes: 5 };
+// Internal-marks scheme (theory evaluation sheet) and lab rubric (lab evaluation sheet). Defaults follow EIT's TES and LES formats.
+const DEFAULT_INTERNAL = {
+  round: 'nearest',
+  parts: [
+    { label: 'Assignments', source: 'Assignment', number: 0, weight: 5 },
+    { label: 'Sessional-1', source: 'Sessional', number: 1, weight: 5 },
+    { label: 'Sessional-2', source: 'Sessional', number: 2, weight: 10 },
+    { label: 'Attendance', source: 'manual', number: 0, weight: 5 },
+  ],
+};
+const DEFAULT_LAB = {
+  experiments: 10,
+  final: 15,
+  criteria: [
+    { code: 'R1', label: 'Arrangement of experiment setup / algorithm of program', max: 6 },
+    { code: 'R3', label: 'Viva-voce', max: 8 },
+    { code: 'R4', label: 'Result and record writing', max: 6 },
+  ],
+};
+const SETTING_DEFAULTS = { session: '', default_password: '', pass_percent: 40, rank_scope: 'section', code_minutes: 5, internal: DEFAULT_INTERNAL, lab: DEFAULT_LAB };
+const SOURCES = ['Assignment', 'Sessional', 'Mid Term', 'MCQ Test', 'Hybrid', 'manual'];
+function cleanInternal(v, cur) {
+  if (!v || typeof v !== 'object' || !Array.isArray(v.parts)) return cur;
+  const parts = v.parts.slice(0, 8).map((p) => ({
+    label: String(p.label || '').trim().slice(0, 40),
+    source: SOURCES.includes(p.source) ? p.source : null,
+    number: Number.isInteger(+p.number) && +p.number >= 0 && +p.number <= 9 ? +p.number : 0,
+    weight: Number(p.weight),
+  }));
+  if (!parts.length || parts.some((p) => !p.label || !p.source || !(p.weight > 0 && p.weight <= 100))) fail(400, 'Every internal-marks component needs a name, a source and a weight');
+  return { round: ['nearest', 'up', 'none'].includes(v.round) ? v.round : 'nearest', parts };
+}
+function cleanLab(v, cur) {
+  if (!v || typeof v !== 'object' || !Array.isArray(v.criteria)) return cur;
+  const criteria = v.criteria.slice(0, 6).map((c) => ({ code: String(c.code || '').trim().slice(0, 6), label: String(c.label || '').trim().slice(0, 120), max: Number(c.max) }));
+  if (!criteria.length || criteria.some((c) => !c.code || !(c.max > 0 && c.max <= 100))) fail(400, 'Every lab rubric criterion needs a code and its marks');
+  const final = Number(v.final), experiments = Number(v.experiments);
+  if (!(final > 0 && final <= 100) || !(Number.isInteger(experiments) && experiments >= 1 && experiments <= 20)) fail(400, 'Lab final marks must be 1-100 and experiments 1-20');
+  return { criteria, final, experiments };
+}
 function instSettings(row) {
   let s = {};
   try { s = JSON.parse(row?.settings_json || '{}'); } catch { /* defaults */ }
@@ -693,6 +732,8 @@ async function handle(request, env, ctx) {
       pass_percent: Number(si.pass_percent) >= 1 && Number(si.pass_percent) <= 100 ? Number(si.pass_percent) : cur.pass_percent,
       rank_scope: si.rank_scope ? (si.rank_scope === 'branch' ? 'branch' : 'section') : cur.rank_scope,
       code_minutes: [5, 10].includes(Number(si.code_minutes)) ? Number(si.code_minutes) : cur.code_minutes,
+      internal: cleanInternal(si.internal, cur.internal),
+      lab: cleanLab(si.lab, cur.lab),
     };
     if (settings.default_password && settings.default_password.length < 6) fail(400, 'The first password must be at least 6 characters');
     await env.DB.prepare('UPDATE institutes SET name = ?, line = ?, logo = ?, letterhead = ?, format_json = ?, settings_json = ? WHERE id = ?')
@@ -1969,6 +2010,195 @@ async function handle(request, env, ctx) {
     await env.DB.batch(stmts);
     await notify(env, inst, [t.student_id], `Result declared: ${t.type} ${t.number} · ${t.subject_code}`, `#/result/${t.id}`);
     await audit('result approved', `${t.type} ${t.number} ${t.subject_code}, roll no ${t.roll_no}`);
+    return json({ ok: true });
+  }
+
+  // ----- evaluation sheets: theory (TES, internal marks) and lab (LES) for one subject in one section -----
+
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const sheetAccess = async (subjectId, sectionId) => {
+    staff();
+    const [sb, sc] = await Promise.all([
+      env.DB.prepare('SELECT id, code, name, type, semester, programme_id FROM subjects WHERE id = ? AND institute_id = ?').bind(+subjectId || 0, inst).first(),
+      env.DB.prepare('SELECT s.id, s.name, s.semester, s.department_id, s.coordinator_id, s.programme, p.name AS programme_name FROM sections s LEFT JOIN programmes p ON p.id = s.programme_id WHERE s.id = ? AND s.institute_id = ?').bind(+sectionId || 0, inst).first(),
+    ]);
+    if (!sb || !sc) fail(404, 'Choose a subject and a section');
+    const al = await env.DB.prepare('SELECT a.faculty_id, u.name FROM allotments a JOIN users u ON u.id = a.faculty_id WHERE a.subject_id = ? AND a.section_id = ?').bind(sb.id, sc.id).first();
+    const edit = !!al && al.faculty_id === user.id;
+    const view = edit || user.perms.manage || user.perms.reports === 'institute' || sc.coordinator_id === user.id
+      || (user.role === 'hod' && user.department_id && user.department_id === sc.department_id);
+    if (!view) fail(403, 'Only the subject\'s faculty, the class coordinator, the HOD and institute-level staff can open this sheet');
+    const students = (await env.DB.prepare(`SELECT id, name, univ_roll, college_roll, roll_no FROM users WHERE section_id = ? AND role = 'student' AND status = 'active'
+      ORDER BY COALESCE(college_roll, univ_roll, roll_no), name`).bind(sc.id).all()).results;
+    const entries = new Map((await env.DB.prepare('SELECT student_id, manual_json, moderation FROM internal_entries WHERE subject_id = ? AND section_id = ?').bind(sb.id, sc.id).all())
+      .results.map((e) => [e.student_id, { manual: JSON.parse(e.manual_json || '{}'), moderation: e.moderation }]));
+    const st = await settingsRow();
+    return { sb, sc, edit, faculty: al?.name || '', students, entries, st };
+  };
+  const sheetHead = (x) => ({ subject: { id: x.sb.id, code: x.sb.code, name: x.sb.name, type: x.sb.type }, section: { id: x.sc.id, name: x.sc.name, semester: x.sc.semester },
+    programme: x.sc.programme_name || x.sc.programme || '', session: x.st.session, faculty: x.faculty, can_edit: x.edit });
+
+  // Subjects and sections whose sheets this user may open.
+  if (route('GET', /^\/api\/sheets$/)) {
+    staff();
+    const all = user.perms.manage || user.perms.reports === 'institute';
+    const { results } = await env.DB.prepare(`SELECT a.subject_id, a.section_id, sb.code, sb.name AS subject, sb.type, sc.name AS section, f.name AS faculty, a.faculty_id = ? AS mine
+      FROM allotments a JOIN subjects sb ON sb.id = a.subject_id JOIN sections sc ON sc.id = a.section_id JOIN users f ON f.id = a.faculty_id
+      WHERE a.institute_id = ? AND (? OR a.faculty_id = ? OR sc.coordinator_id = ? OR (sc.department_id = ? AND ?)) ORDER BY mine DESC, sc.name, sb.code`)
+      .bind(user.id, inst, all ? 1 : 0, user.id, user.id, user.department_id ?? 0, user.role === 'hod' ? 1 : 0).all();
+    return json(results);
+  }
+
+  if (route('GET', /^\/api\/sheets\/theory$/)) {
+    const x = await sheetAccess(url.searchParams.get('subject'), url.searchParams.get('section'));
+    const scheme = x.st.internal;
+    const parts = [];
+    for (const p of scheme.parts) {
+      if (p.source === 'manual') { parts.push({ ...p, items: [], max: p.weight }); continue; }
+      const list = (await env.DB.prepare(`SELECT s.id, s.type, s.number, s.paper_json FROM assessments s JOIN assessment_sections q ON q.assessment_id = s.id
+        WHERE s.institute_id = ? AND q.section_id = ? AND (s.subject_id = ? OR (s.subject_id IS NULL AND s.subject_code = ?)) AND s.type = ? ${p.number ? 'AND s.number = ?' : ''}
+          AND s.status = 'published' ORDER BY s.number`).bind(inst, x.sc.id, x.sb.id, x.sb.code, p.source, ...(p.number ? [p.number] : [])).all()).results;
+      const items = [];
+      for (const a of list) {
+        const P = paperOf(a);
+        const rows = (await env.DB.prepare(`SELECT t.student_id, an.final_marks, q.part, q.qgroup, q.co FROM attempts t JOIN answers an ON an.attempt_id = t.id
+          JOIN questions q ON q.id = an.question_id WHERE t.assessment_id = ? AND t.status = 'published'`).bind(a.id).all()).results;
+        const byStudent = new Map();
+        rows.forEach((r) => { if (!byStudent.has(r.student_id)) byStudent.set(r.student_id, []); byStudent.get(r.student_id).push(r); });
+        const cos = [...new Set(rows.map((r) => r.co).filter(Boolean))].sort();
+        const marks = {};
+        for (const [sid, l] of byStudent) {
+          const total = countBest(P.parts, l, 'final_marks');
+          const co = {};
+          l.filter((r) => r.counted && r.co).forEach((r) => (co[r.co] = r2((co[r.co] || 0) + (r.final_marks || 0))));
+          marks[sid] = { total, co };
+        }
+        items.push({ id: a.id, title: `${a.type}-${a.number}`, max: P.max_marks || 0, cos: ['Sessional', 'Mid Term', 'Hybrid'].includes(a.type) ? cos : [], marks });
+      }
+      parts.push({ ...p, items, max: items.reduce((m, i) => m + i.max, 0) });
+    }
+    const total = scheme.parts.reduce((m, p) => m + p.weight, 0);
+    const rnd = (v) => (scheme.round === 'up' ? Math.ceil(v - 1e-9) : scheme.round === 'none' ? r2(v) : Math.round(v));
+    const students = x.students.map((u) => {
+      const e = x.entries.get(u.id) || { manual: {}, moderation: 0 };
+      const cells = parts.map((p) => {
+        if (p.source === 'manual') {
+          const v = e.manual[p.label];
+          return { raw: v ?? null, scaled: v ?? null };
+        }
+        const got = p.items.map((i) => i.marks[u.id] || null);
+        if (got.every((g) => !g)) return { items: got, raw: null, scaled: null };
+        const raw = r2(got.reduce((m, g) => m + (g ? g.total : 0), 0));
+        return { items: got, raw, scaled: p.max ? r2((Math.max(0, raw) / p.max) * p.weight) : null };
+      });
+      const actual = rnd(cells.reduce((m, c) => m + (c.scaled || 0), 0));
+      const fin = Math.min(total, Math.max(0, r2(actual + (e.moderation || 0))));
+      return { id: u.id, name: u.name, univ_roll: u.univ_roll, college_roll: u.college_roll || u.roll_no, cells, actual, moderation: e.moderation || 0, final: fin };
+    });
+    return json({ ...sheetHead(x), round: scheme.round, total, parts: parts.map((p) => ({ label: p.label, source: p.source, number: p.number, weight: p.weight, max: p.max,
+      items: p.items.map(({ marks, ...i }) => i) })), students });
+  }
+
+  // Hand-entered columns (attendance and other manual components) and moderation, by the subject's faculty.
+  if (route('PUT', /^\/api\/sheets\/entries$/)) {
+    const b = await body(request);
+    const x = await sheetAccess(b.subject, b.section);
+    if (!x.edit) fail(403, 'Only the faculty allotted to this subject and section can change the sheet');
+    const manualParts = x.st.internal.parts.filter((p) => p.source === 'manual');
+    const ids = new Set(x.students.map((u) => u.id));
+    const rows = (Array.isArray(b.rows) ? b.rows : []).filter((r) => ids.has(+r.student_id));
+    const stmts = rows.map((r) => {
+      const prev = x.entries.get(+r.student_id) || { manual: {}, moderation: 0 };
+      const manual = { ...prev.manual };
+      if (r.manual && typeof r.manual === 'object') {
+        for (const p of manualParts) {
+          if (!(p.label in r.manual)) continue;
+          const v = r.manual[p.label];
+          if (v === '' || v === null) { delete manual[p.label]; continue; }
+          if (!(Number(v) >= 0 && Number(v) <= p.weight)) fail(400, `${p.label} must be 0 to ${p.weight}`);
+          manual[p.label] = Number(v);
+        }
+      }
+      const mod = r.moderation === undefined ? prev.moderation : Number(r.moderation) || 0;
+      if (Math.abs(mod) > 100) fail(400, 'Moderation is too large');
+      return env.DB.prepare(`INSERT INTO internal_entries (institute_id, subject_id, section_id, student_id, manual_json, moderation, updated_at) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT (subject_id, section_id, student_id) DO UPDATE SET manual_json = excluded.manual_json, moderation = excluded.moderation, updated_at = excluded.updated_at`)
+        .bind(inst, x.sb.id, x.sc.id, +r.student_id, JSON.stringify(manual), mod, now());
+    });
+    if (stmts.length) await env.DB.batch(stmts);
+    await audit('evaluation sheet updated', `${x.sb.code} ${x.sc.name}: ${stmts.length} row(s)`);
+    return json({ ok: true });
+  }
+
+  // ----- lab evaluation sheet -----
+  if (route('GET', /^\/api\/sheets\/lab$/)) {
+    const x = await sheetAccess(url.searchParams.get('subject'), url.searchParams.get('section'));
+    const lab = x.st.lab;
+    const exps = (await env.DB.prepare('SELECT id, no, title, held_on FROM lab_experiments WHERE subject_id = ? AND section_id = ? ORDER BY no').bind(x.sb.id, x.sc.id).all()).results;
+    const marks = exps.length ? (await env.DB.prepare(`SELECT experiment_id, student_id, marks_json FROM lab_marks WHERE experiment_id IN (${exps.map(() => '?').join(',')})`).bind(...exps.map((e) => e.id)).all()).results : [];
+    const expMax = lab.criteria.reduce((m, c) => m + c.max, 0);
+    const students = x.students.map((u) => {
+      const mine = {};
+      marks.filter((m) => m.student_id === u.id).forEach((m) => (mine[m.experiment_id] = JSON.parse(m.marks_json)));
+      const totals = exps.map((e) => (mine[e.id] ? r2(lab.criteria.reduce((s2, c) => s2 + (Number(mine[e.id][c.code]) || 0), 0)) : null));
+      const avg = exps.length ? r2(totals.reduce((s2, t) => s2 + (t || 0), 0) / exps.length) : null; // an experiment missed counts as 0
+      const scaled = avg === null ? null : Math.round((avg / expMax) * lab.final * 100) / 100;
+      const e = x.entries.get(u.id) || { moderation: 0 };
+      const fin = scaled === null ? null : Math.min(lab.final, Math.max(0, Math.round(scaled + (e.moderation || 0))));
+      return { id: u.id, name: u.name, univ_roll: u.univ_roll, college_roll: u.college_roll || u.roll_no, marks: mine, totals, avg, scaled, moderation: e.moderation || 0, final: fin };
+    });
+    return json({ ...sheetHead(x), lab, exp_max: expMax, experiments: exps, students });
+  }
+  if (route('POST', /^\/api\/sheets\/lab\/experiments$/)) {
+    const b = await body(request);
+    const x = await sheetAccess(b.subject, b.section);
+    if (!x.edit) fail(403, 'Only the faculty allotted to this lab can add experiments');
+    const used = (await env.DB.prepare('SELECT no FROM lab_experiments WHERE subject_id = ? AND section_id = ?').bind(x.sb.id, x.sc.id).all()).results.map((e) => e.no);
+    if (used.length >= x.st.lab.experiments) fail(400, `At most ${x.st.lab.experiments} experiments`);
+    const no = Math.max(0, ...used) + 1;
+    const held = typeof b.held_on === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.held_on) ? b.held_on : null;
+    await env.DB.prepare('INSERT INTO lab_experiments (institute_id, subject_id, section_id, no, title, held_on) VALUES (?,?,?,?,?,?)')
+      .bind(inst, x.sb.id, x.sc.id, no, String(b.title || '').trim().slice(0, 150), held).run();
+    return json({ ok: true, no });
+  }
+  if ((m = route('PUT', /^\/api\/sheets\/lab\/experiments\/(\d+)$/)) || (m = route('DELETE', /^\/api\/sheets\/lab\/experiments\/(\d+)$/))) {
+    const e = await env.DB.prepare('SELECT * FROM lab_experiments WHERE id = ? AND institute_id = ?').bind(+m[1], inst).first();
+    if (!e) fail(404, 'Experiment not found');
+    const x = await sheetAccess(e.subject_id, e.section_id);
+    if (!x.edit) fail(403, 'Only the faculty allotted to this lab can change experiments');
+    if (request.method === 'DELETE') {
+      await env.DB.batch([env.DB.prepare('DELETE FROM lab_marks WHERE experiment_id = ?').bind(e.id), env.DB.prepare('DELETE FROM lab_experiments WHERE id = ?').bind(e.id)]);
+      return json({ ok: true });
+    }
+    const b = await body(request);
+    const held = typeof b.held_on === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.held_on) ? b.held_on : null;
+    await env.DB.prepare('UPDATE lab_experiments SET title = ?, held_on = ? WHERE id = ?').bind(String(b.title || '').trim().slice(0, 150), held, e.id).run();
+    return json({ ok: true });
+  }
+  if (route('PUT', /^\/api\/sheets\/lab\/marks$/)) {
+    const b = await body(request);
+    const e = await env.DB.prepare('SELECT * FROM lab_experiments WHERE id = ? AND institute_id = ?').bind(+b.experiment_id || 0, inst).first();
+    if (!e) fail(404, 'Experiment not found');
+    const x = await sheetAccess(e.subject_id, e.section_id);
+    if (!x.edit) fail(403, 'Only the faculty allotted to this lab can enter marks');
+    const ids = new Set(x.students.map((u) => u.id));
+    const crit = x.st.lab.criteria;
+    const stmts = [];
+    for (const r of Array.isArray(b.rows) ? b.rows : []) {
+      if (!ids.has(+r.student_id)) continue;
+      const mk = {};
+      let any = false;
+      for (const c of crit) {
+        const v = r.marks?.[c.code];
+        if (v === '' || v === null || v === undefined) continue;
+        if (!(Number(v) >= 0 && Number(v) <= c.max)) fail(400, `${c.code} must be 0 to ${c.max}`);
+        mk[c.code] = Number(v); any = true;
+      }
+      stmts.push(any
+        ? env.DB.prepare(`INSERT INTO lab_marks (experiment_id, student_id, marks_json) VALUES (?,?,?) ON CONFLICT (experiment_id, student_id) DO UPDATE SET marks_json = excluded.marks_json`).bind(e.id, +r.student_id, JSON.stringify(mk))
+        : env.DB.prepare('DELETE FROM lab_marks WHERE experiment_id = ? AND student_id = ?').bind(e.id, +r.student_id));
+    }
+    if (stmts.length) await env.DB.batch(stmts);
     return json({ ok: true });
   }
 
