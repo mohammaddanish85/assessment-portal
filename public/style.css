@@ -252,3 +252,5 @@ td.left { text-align: left !important; }
 @media print { .doc.wide { page: wide; } .cellin { border: 0; width: auto; } }
 main:has(.doc.wide) { max-width: 1440px; }
 table.tes td.left, table.les td.left { min-width: 130px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; align-items: start; } .grid2 > div:last-child { align-self: end; }
+.help ol, .help ul { margin: 6px 0 0 18px; line-height: 1.6; } .help li { margin: 4px 0; }

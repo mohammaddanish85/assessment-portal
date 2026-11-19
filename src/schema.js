@@ -288,6 +288,20 @@ export const SCHEMA = [
     mode TEXT NOT NULL DEFAULT 'section',
     setter_id INTEGER
   )`,
+  // Re-test: a personal window for one student (absent, or a technical failure). Any earlier attempt is removed when granted.
+  `CREATE TABLE IF NOT EXISTS retests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institute_id INTEGER NOT NULL,
+    assessment_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    granted_by INTEGER NOT NULL,
+    granted_at TEXT NOT NULL,
+    earlier TEXT,
+    UNIQUE (assessment_id, student_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     institute_id INTEGER,

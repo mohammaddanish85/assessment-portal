@@ -95,7 +95,7 @@ function drawNav() {
     : user.role === 'student' ? '<a href="#/">My assessments</a>'
     : `${p.manage ? '<a href="#/setup">Institute setup</a>' : ''}${p.students || p.manage ? '<a href="#/students">Students</a>' : ''}${(user.coordinates || []).length ? '<a href="#/my-section">My section</a>' : ''}${user.role === 'hod' ? '<a href="#/moderation">Moderation</a><a href="#/dqac">DQAC and setters</a>' : ''}${user.dqac || user.role === 'hod' ? '<a href="#/reviews">Reviews</a>' : ''}${p.create || p.reports !== 'own' ? '<a href="#/list">Assessments</a>' : ''}${p.create ? '<a href="#/new">New assessment</a>' : ''}`;
   const rep = user.role !== 'student' && user.role !== 'owner' && (p.reports === 'institute' || p.manage || user.role === 'hod' || (user.coordinates || []).length);
-  nav.innerHTML = `${user.must_change ? '' : links}${!user.must_change && user.role !== 'student' && user.role !== 'owner' && (p.create || rep) ? '<a href="#/sheets">Evaluation sheets</a>' : ''}${!user.must_change && rep ? '<a href="#/reports">Reports</a>' : ''}${user.must_change || user.role === 'owner' ? '' : '<button class="bell" id="bell" aria-label="Notifications">🔔<b id="belln" hidden></b></button>'}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
+  nav.innerHTML = `${user.must_change ? '' : links}${!user.must_change && user.role !== 'student' && user.role !== 'owner' && (p.create || rep) ? '<a href="#/sheets">Evaluation sheets</a>' : ''}${!user.must_change && rep ? '<a href="#/reports">Reports</a>' : ''}${user.must_change || user.role === 'owner' ? '' : '<button class="bell" id="bell" aria-label="Notifications">🔔<b id="belln" hidden></b></button>'}${user.must_change || user.role === 'owner' ? '' : '<a href="#/help">Help</a>'}${user.role === 'student' ? `<span class="muted small">${esc(user.name)}</span>` : `<a href="#/password" class="muted small">${esc(user.name)}</a>`}<button class="ghost small" id="logout">Log out</button>`;
   const bell = document.getElementById('bell');
   if (bell) {
     const load = () => api('GET', '/notifications').then((n) => { const b = document.getElementById('belln'); if (b) { b.hidden = !n.unread; b.textContent = n.unread; } return n; }).catch(() => null);
@@ -843,6 +843,7 @@ async function viewAssessment(id) {
         <td>${num(t.llm_total)}</td><td>${t.status === 'published' ? num(t.final_total) : '–'}</td><td>${t.tab_switches}</td><td>${t.paste_attempts}</td>
         <td class="right">${t.status === 'in_progress' ? '' : `<a class="btn ghost" href="#/review/${t.id}">${a.can.approve ? 'Review' : 'View'}</a>`}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No student has started yet.</p>'}</div>
+    ${a.status === 'published' && a.can.approve ? '<div class="card" id="retests"></div>' : ''}
     <div class="card"><div class="between"><h2>Question paper</h2><label class="choice" style="margin:0"><input type="checkbox" id="showkey"> Show answer key and rubric</label></div>
       <div class="paper-preview" id="paperprev"></div></div>`;
   const inst = await api('GET', '/settings');
@@ -860,6 +861,8 @@ async function viewAssessment(id) {
     location.hash = '#/';
   });
   drawModeration(document.getElementById('moderation'), a, () => viewAssessment(id)).catch((e) => toast(e.message, true));
+  const rbox = document.getElementById('retests');
+  if (rbox) drawRetests(rbox, a, () => viewAssessment(id)).catch((e) => toast(e.message, true));
   const sc = document.getElementById('startcode');
   if (sc) {
     const show = async () => {
@@ -879,6 +882,43 @@ async function viewAssessment(id) {
     toast('Published');
     viewAssessment(id);
   });
+}
+
+// Re-test: the faculty of a student's section gives that student a personal window. Any earlier attempt is removed (a note is kept).
+async function drawRetests(box, a, reload) {
+  const d = await api('GET', `/assessments/${a.id}/retests`);
+  const local = (x) => new Date(x - x.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const s0 = new Date(Math.ceil(Date.now() / 900e3) * 900e3);
+  const e0 = new Date(+s0 + Math.max(a.duration_min + 30, 60) * 60e3);
+  const state = (s) => s === 'in_progress' ? 'writing now' : s ? 'has an attempt' : 'absent';
+  box.innerHTML = `<h2>Re-test</h2>
+    <p class="small muted">For a student who was absent, or whose test was spoilt by a power or network failure. The student gets a personal window; any earlier attempt and its marks are removed (a note stays in the record and the activity log).</p>
+    ${d.students.length ? `<form id="rtform" class="grid2">
+      <label>Student<select name="student_id" required><option value="">Choose…</option>${d.students.map((s) => `<option value="${s.id}">${esc(s.roll_no)} · ${esc(s.name)}${s.section ? ` (${esc(s.section)})` : ''} — ${state(s.attempt_status)}</option>`).join('')}</select></label>
+      <label>Reason<input name="reason" maxlength="300" placeholder="e.g. Absent with medical leave" required></label>
+      <label>Window opens<input name="start_at" type="datetime-local" value="${local(s0)}" required></label>
+      <label>Window closes<input name="end_at" type="datetime-local" value="${local(e0)}" required></label>
+      <div><button>Give re-test</button></div></form>` : '<p class="muted small">No student of your sections takes this assessment.</p>'}
+    ${d.retests.length ? `<table style="margin-top:12px"><thead><tr><th>Student</th><th>Window</th><th>Reason</th><th>Earlier attempt</th><th>Now</th><th>Given by</th><th></th></tr></thead><tbody>
+      ${d.retests.map((r) => `<tr><td>${esc(r.roll_no)} · ${esc(r.name)}</td><td class="small">${fmt(r.start_at)} → ${fmt(r.end_at)}</td><td class="small">${esc(r.reason)}</td>
+        <td class="small">${r.earlier ? `${esc(r.earlier.status)}${r.earlier.marks !== null ? `, ${num(r.earlier.marks)} marks` : ''}` : 'none'}</td>
+        <td class="small">${r.attempt_status ? esc(r.attempt_status.replace('_', ' ')) : 'not started'}</td><td class="small">${esc(r.granted_by_name)}</td>
+        <td class="right">${r.attempt_status ? '' : `<button type="button" class="ghost small" data-rtdel="${r.id}">Withdraw</button>`}</td></tr>`).join('')}</tbody></table>` : ''}`;
+  const f = document.getElementById('rtform');
+  if (f) f.onsubmit = act(async (ev) => {
+    ev.preventDefault();
+    const v = Object.fromEntries(new FormData(f));
+    const st = d.students.find((s) => s.id === +v.student_id);
+    if (st && st.attempt_status && !(await ask(`${st.name} already has an attempt. Giving a re-test removes that attempt and its marks. Continue?`, { ok: 'Give re-test' }))) return;
+    await api('POST', `/assessments/${a.id}/retests`, { ...v, start_at: new Date(v.start_at).toISOString(), end_at: new Date(v.end_at).toISOString() });
+    toast('Re-test given. The student has been notified.');
+    reload();
+  });
+  box.querySelectorAll('[data-rtdel]').forEach((b) => (b.onclick = act(async () => {
+    await api('DELETE', `/retests/${b.dataset.rtdel}`);
+    toast('Re-test withdrawn');
+    reload();
+  })));
 }
 
 // Figures shared by the analysis card and the printed report. Uses published results only.
@@ -1153,7 +1193,7 @@ async function viewPrint(kind, id) {
   }
   if (seq !== nav_seq) return;
   app.innerHTML = `<div class="between no-print printbar"><a href="${back}">← Back</a>
-      <span><span class="muted small">In the print dialog choose "Save as PDF".</span> <button onclick="window.print()">Print / Save as PDF</button></span></div>
+      <span><span class="muted small">In the print dialog choose "Save as PDF".</span> <button data-print>Print / Save as PDF</button></span></div>
     <div class="paper">${html}<p class="genline">Generated by COGNEXA on ${fmt(new Date().toISOString())}</p></div>`;
 }
 
@@ -1173,7 +1213,7 @@ async function viewStudentHome() {
     return `<a class="btn" href="#/attempt/${a.id}">Start</a>`;
   };
   app.innerHTML = `<h1>My assessments</h1><div class="card">${list.length ? `<table><tbody>${list.map((a) => `<tr>
-      <td><b>${title(a)}</b><div class="muted small">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${a.question_count} question(s) · ${num(a.total_marks)} marks</div></td>
+      <td><b>${title(a)}</b>${a.retest ? ' <span class="pill">Re-test</span>' : ''}<div class="muted small">${fmt(a.start_at)} → ${fmt(a.end_at)} · ${a.duration_min} min · ${a.question_count} question(s) · ${num(a.total_marks)} marks</div></td>
       <td class="right">${action(a)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No assessments are available right now.</p>'}</div>`;
 }
 
@@ -1359,7 +1399,7 @@ async function viewResult(id) {
   }
   const got = r.total ?? r.answers.reduce((s, a) => s + a.marks, 0);
   const max = r.max ?? r.answers.reduce((s, a) => s + a.max_marks, 0);
-  app.innerHTML = `<p class="between no-print"><a href="#/">← My assessments</a><button class="ghost" onclick="window.print()">Print / Save as PDF</button></p>
+  app.innerHTML = `<p class="between no-print"><a href="#/">← My assessments</a><button class="ghost" data-print>Print / Save as PDF</button></p>
     <div class="print-only">${head}</div><h1>${title(r.assessment)}</h1><p class="print-only">${esc(user.name)}${user.roll_no ? ` · Roll no ${esc(user.roll_no)}` : ''}</p>
     <div class="result-top">
       <div class="card"><div class="muted">Total marks</div><div class="score">${num(got)} / ${num(max)}</div></div>
@@ -1409,6 +1449,7 @@ async function route() {
     if (user.role === 'student') {
       if (page === 'attempt' && id) return await viewAttempt(+id);
       if (page === 'result' && id) return await viewResult(+id);
+      if (page === 'help') return viewHelp();
       return await viewStudentHome();
     }
     const p = user.perms;
@@ -1417,6 +1458,7 @@ async function route() {
     if (page === 'my-section' && (user.coordinates || []).length) return await viewStudents(+id || 0);
     if (page === 'dqac' && user.role === 'hod') return await viewDqac();
     if (page === 'moderation' && user.role === 'hod') return await viewTracker();
+    if (page === 'help') return viewHelp();
     if (page === 'reviews') return await viewMyReviews();
     if (page === 'reports') return await viewReports();
     if (page === 'sheets') return await viewSheets();
@@ -1437,3 +1479,6 @@ async function route() {
 
 window.addEventListener('hashchange', route);
 route();
+
+// Print buttons (no inline handlers, so the page can run under a strict Content-Security-Policy).
+document.addEventListener('click', (e) => { if (e.target.closest('[data-print]')) window.print(); });

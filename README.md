@@ -46,6 +46,10 @@ The full list of agreed rules is in `DESIGN.md`.
   (section- or branch-wise, Pass/Fail at the pass mark, toppers, Excel), institute overview.
 - **Evaluation sheets:** TES (internal marks from approved results, attendance, moderation; default
   5 + 5 + 10 + 5 = 25) and LES (experiments, R1/R3/R4 rubric, average, scale to 15, moderation), Excel and print.
+- **Re-test:** the section's faculty gives an absent student (or one whose test was spoilt) a personal window;
+  any earlier attempt is removed with a note kept in the record.
+- **Administration:** activity log, one-click Excel backup of the whole institute, a help page for every role,
+  strict security headers.
 - **Evaluation providers** (`EVAL_PROVIDER` in `wrangler.jsonc`):
   - `workers-ai`: Cloudflare Workers AI (default)
   - `openai-compatible`: any OpenAI-style endpoint, e.g. a model on the college server

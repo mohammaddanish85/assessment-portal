@@ -23,7 +23,7 @@ const SESSION_HOURS = 12;
 const GRACE_SECONDS = 60; // allowance for the final autosave / auto-submit after the deadline
 
 const json = (data, status = 200, headers = {}) =>
-  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
+  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers } });
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -54,6 +54,8 @@ function safeEqual(a, b) {
 }
 
 let schemaReady = false;
+// Dates in messages are shown in Indian time.
+const fmtIST = (d) => d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 async function ensureSchema(env) {
   if (schemaReady) return;
   await prepareDatabase(env.DB);
@@ -2281,6 +2283,105 @@ async function handle(request, env, ctx) {
     return json({ code: await startCode(a.code_seed, w), changes_at: new Date((w + 1) * ms).toISOString(), minutes: st.code_minutes });
   }
 
+  // ----- backup: every record of this institute, for the admin to keep (no passwords, sessions or secret seeds) -----
+  if (route('GET', /^\/api\/backup$/)) {
+    admin();
+    const direct = ['departments', 'programmes', 'sections', 'subjects', 'users', 'allotments', 'paper_setters', 'dqac', 'elective_choices',
+      'assessments', 'reviews', 'compliance', 'rechecks', 'retests', 'internal_entries', 'lab_experiments', 'lab_marks', 'notifications', 'audit'];
+    const secret = /hash|salt|token|password|code_seed|signature|letterhead/i;
+    const out = {};
+    const has = async (t) => new Set((await env.DB.prepare(`PRAGMA table_info(${t})`).all()).results.map((c) => c.name));
+    const read = async (name, sql, ...binds) => {
+      const r = await env.DB.prepare(sql).bind(...binds).all();
+      out[name] = r.results.map((row) => Object.fromEntries(Object.entries(row).filter(([k]) => !secret.test(k))));
+    };
+    for (const t of direct) if ((await has(t)).has('institute_id')) await read(t, `SELECT * FROM ${t} WHERE institute_id = ? ORDER BY 1`, inst);
+    await read('questions', 'SELECT q.* FROM questions q JOIN assessments s ON s.id = q.assessment_id WHERE s.institute_id = ? ORDER BY q.assessment_id, q.seq', inst);
+    await read('assessment_sections', 'SELECT x.* FROM assessment_sections x JOIN assessments s ON s.id = x.assessment_id WHERE s.institute_id = ?', inst);
+    await read('attempts', 'SELECT t.* FROM attempts t JOIN assessments s ON s.id = t.assessment_id WHERE s.institute_id = ? ORDER BY t.id', inst);
+    await read('lab_marks', 'SELECT lm.* FROM lab_marks lm JOIN lab_experiments e ON e.id = lm.experiment_id WHERE e.institute_id = ?', inst);
+    await read('answers', 'SELECT an.* FROM answers an JOIN attempts t ON t.id = an.attempt_id JOIN assessments s ON s.id = t.assessment_id WHERE s.institute_id = ? ORDER BY an.id', inst);
+    const me = await env.DB.prepare('SELECT * FROM institutes WHERE id = ?').bind(inst).first();
+    const set = JSON.parse(me.settings_json || '{}');
+    delete set.default_password;
+    out.institute = [{ ...Object.fromEntries(Object.entries(me).filter(([k]) => !secret.test(k))), settings_json: JSON.stringify(set) }];
+    await audit('backup downloaded', Object.entries(out).map(([k, v]) => `${k} ${v.length}`).join(', '));
+    return json({ taken_at: now(), tables: out });
+  }
+
+  // ----- re-test: a personal window for one student (absent, or a technical failure) -----
+  if ((m = route('GET', /^\/api\/assessments\/(\d+)\/retests$/))) {
+    const a = await readAssessment(+m[1]);
+    if (a.status !== 'published') return json({ students: [], retests: [] });
+    const [st, rt] = await env.DB.batch([
+      env.DB.prepare(`SELECT u.id, u.roll_no, u.name, sec.name AS section, t.status AS attempt_status
+        FROM users u LEFT JOIN sections sec ON sec.id = u.section_id LEFT JOIN attempts t ON t.assessment_id = ? AND t.student_id = u.id
+        WHERE u.institute_id = ? AND u.role = 'student' AND COALESCE(u.status,'active') = 'active'
+          AND (NOT EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = ?)
+               OR u.section_id IN (SELECT section_id FROM assessment_sections WHERE assessment_id = ?))
+        ORDER BY sec.name, u.roll_no`).bind(a.id, inst, a.id, a.id),
+      env.DB.prepare(`SELECT r.*, u.roll_no, u.name, g.name AS granted_by_name, t.status AS attempt_status
+        FROM retests r JOIN users u ON u.id = r.student_id JOIN users g ON g.id = r.granted_by
+        LEFT JOIN attempts t ON t.assessment_id = r.assessment_id AND t.student_id = r.student_id
+        WHERE r.assessment_id = ? ORDER BY r.id DESC`).bind(a.id),
+    ]);
+    // Only the students whose results this faculty member handles can be given a re-test.
+    const mine = [];
+    for (const s of st.results) if (await mayApprove({ student_id: s.id, assessment_id: a.id, department_id: a.department_id, faculty_id: a.faculty_id })) mine.push(s);
+    return json({ students: mine, retests: rt.results.map((r) => ({ ...r, earlier: r.earlier ? JSON.parse(r.earlier) : null })) });
+  }
+  if ((m = route('POST', /^\/api\/assessments\/(\d+)\/retests$/))) {
+    const a = await readAssessment(+m[1]);
+    if (a.status !== 'published') fail(409, 'A re-test can be given only for a published assessment');
+    const b = await request.json();
+    const sid = +b.student_id;
+    const reason = String(b.reason || '').trim().slice(0, 300);
+    const s = Date.parse(b.start_at), e = Date.parse(b.end_at);
+    if (!sid) fail(400, 'Choose the student');
+    if (!reason) fail(400, 'Write the reason for the re-test (for example: absent with leave, power failure)');
+    if (!s || !e || e <= s) fail(400, 'Give a valid re-test window: the end must be after the start');
+    if (e - s < a.duration_min * 60e3) fail(400, `The window must be at least as long as the test (${a.duration_min} min)`);
+    if (e < Date.now()) fail(400, 'The re-test window has already ended');
+    const stu = await env.DB.prepare(`SELECT id, name, roll_no, section_id FROM users WHERE id = ? AND institute_id = ? AND role = 'student'`).bind(sid, inst).first();
+    if (!stu) fail(404, 'Student not found');
+    const secs = await env.DB.prepare('SELECT section_id FROM assessment_sections WHERE assessment_id = ?').bind(a.id).all();
+    if (secs.results.length && !secs.results.some((x) => x.section_id === stu.section_id)) fail(400, 'This student is not in a section that takes this assessment');
+    if (!(await mayApprove({ student_id: sid, assessment_id: a.id, department_id: a.department_id, faculty_id: a.faculty_id }))) fail(403, 'The faculty of this student\'s section gives the re-test');
+    const t = await env.DB.prepare('SELECT * FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(a.id, sid).first();
+    if (t && t.status === 'in_progress' && Date.parse(t.deadline_at) > Date.now()) fail(409, 'The student is writing this test right now. Wait until the attempt ends.');
+    // Keep a short record of the earlier attempt, then remove it so the student starts afresh.
+    let earlier = null;
+    const ops = [];
+    if (t) {
+      const sum = await env.DB.prepare('SELECT SUM(final_marks) AS f, SUM(llm_marks) AS l FROM answers WHERE attempt_id = ?').bind(t.id).first();
+      earlier = { status: t.status, started_at: t.started_at, submitted_at: t.submitted_at, marks: sum.f ?? sum.l ?? null, tab_switches: t.tab_switches };
+      ops.push(
+        env.DB.prepare('DELETE FROM rechecks WHERE attempt_id = ?').bind(t.id),
+        env.DB.prepare('DELETE FROM answers WHERE attempt_id = ?').bind(t.id),
+        env.DB.prepare('DELETE FROM attempts WHERE id = ?').bind(t.id),
+      );
+    }
+    ops.push(env.DB.prepare(`INSERT INTO retests (institute_id, assessment_id, student_id, start_at, end_at, reason, granted_by, granted_at, earlier)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (assessment_id, student_id) DO UPDATE SET start_at = excluded.start_at, end_at = excluded.end_at,
+      reason = excluded.reason, granted_by = excluded.granted_by, granted_at = excluded.granted_at, earlier = COALESCE(excluded.earlier, retests.earlier)`)
+      .bind(inst, a.id, sid, new Date(s).toISOString(), new Date(e).toISOString(), reason, user.id, now(), earlier ? JSON.stringify(earlier) : null));
+    await env.DB.batch(ops);
+    await audit('re-test given', `${a.type} ${a.number} ${a.subject_code}: ${stu.roll_no} ${stu.name}; ${reason}${earlier ? `; earlier attempt (${earlier.status}, marks ${earlier.marks ?? '–'}) removed` : ''}`);
+    await notify(env, inst, [sid], `Re-test for ${a.subject_code} ${a.type} ${a.number}: ${fmtIST(new Date(s))} to ${fmtIST(new Date(e))}`, '#/');
+    return json({ ok: true, removed_attempt: !!t });
+  }
+  if ((m = route('DELETE', /^\/api\/retests\/(\d+)$/))) {
+    const r = await env.DB.prepare('SELECT * FROM retests WHERE id = ? AND institute_id = ?').bind(+m[1], inst).first();
+    if (!r) fail(404, 'Re-test not found');
+    const a = await readAssessment(r.assessment_id);
+    if (!(await mayApprove({ student_id: r.student_id, assessment_id: a.id, department_id: a.department_id, faculty_id: a.faculty_id }))) fail(403, 'Not allowed');
+    const t = await env.DB.prepare('SELECT 1 FROM attempts WHERE assessment_id = ? AND student_id = ?').bind(r.assessment_id, r.student_id).first();
+    if (t) fail(409, 'The student has already started the re-test, so it cannot be withdrawn');
+    await env.DB.prepare('DELETE FROM retests WHERE id = ?').bind(r.id).run();
+    await audit('re-test withdrawn', `assessment ${a.id}, student ${r.student_id}`);
+    return json({ ok: true });
+  }
+
   // ----- notifications -----
   if (route('GET', /^\/api\/notifications$/)) {
     const { results } = await env.DB.prepare('SELECT id, text, link, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30').bind(user.id).all();
@@ -2420,16 +2521,19 @@ async function handle(request, env, ctx) {
       `SELECT s.id, s.subject_name, s.subject_code, s.type, s.number, s.duration_min, s.start_at, s.end_at, s.paper_json,
         (SELECT COALESCE(SUM(max_marks),0) FROM questions WHERE assessment_id = s.id) AS total_marks,
         (SELECT COUNT(*) FROM questions WHERE assessment_id = s.id) AS question_count,
-        t.id AS attempt_id, t.status AS attempt_status
+        t.id AS attempt_id, t.status AS attempt_status, r.id AS retest_id, r.start_at AS retest_start, r.end_at AS retest_end
        FROM assessments s LEFT JOIN attempts t ON t.assessment_id = s.id AND t.student_id = ?
+       LEFT JOIN retests r ON r.assessment_id = s.id AND r.student_id = ?
        WHERE s.status = 'published'
          AND (NOT EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = s.id)
               OR EXISTS (SELECT 1 FROM assessment_sections x WHERE x.assessment_id = s.id AND x.section_id = ?)) AND s.institute_id = ?
        ORDER BY s.start_at DESC`,
     )
-      .bind(user.id, user.section_id, inst)
+      .bind(user.id, user.id, user.section_id, inst)
       .all();
-    return json(results.map((r) => ({ ...r, total_marks: paperMax(r, r.total_marks), paper_json: undefined })));
+    return json(results.map((r) => ({ ...r, total_marks: paperMax(r, r.total_marks), paper_json: undefined,
+      retest: !!r.retest_id, start_at: r.retest_start || r.start_at, end_at: r.retest_end || r.end_at,
+      retest_id: undefined, retest_start: undefined, retest_end: undefined })));
   }
 
   // Start (or resume) an attempt. Model answers, rubrics and MCQ answer keys are never sent to the student here.
@@ -2455,6 +2559,9 @@ async function handle(request, env, ctx) {
     const qs = await env.DB.prepare('SELECT id, seq, text, max_marks, kind, options_json, part, label, qgroup FROM questions WHERE assessment_id = ? ORDER BY seq').bind(a.id).all();
     if (!t) {
       const t0 = Date.now();
+      // A re-test replaces the common window with the student's own one.
+      const rt = await env.DB.prepare('SELECT start_at, end_at FROM retests WHERE assessment_id = ? AND student_id = ?').bind(a.id, user.id).first();
+      if (rt) Object.assign(a, { start_at: rt.start_at, end_at: rt.end_at });
       if (t0 < Date.parse(a.start_at)) fail(403, 'This assessment has not started yet');
       if (t0 >= Date.parse(a.end_at)) fail(403, 'The window for this assessment is closed');
       const deadline = new Date(Math.min(t0 + a.duration_min * 60e3, Date.parse(a.end_at))).toISOString();

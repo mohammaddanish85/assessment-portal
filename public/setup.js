@@ -129,7 +129,7 @@ const imgPicker = (max, onPick) => (e) => {
 
 const SETUP_STEPS = [
   ['profile', 'Institute profile'], ['departments', 'Departments'], ['programmes', 'Programmes'], ['scheme', 'Scheme and subjects'],
-  ['faculty', 'Faculty'], ['sections', 'Sections'], ['allotment', 'Subject allotment'], ['activity', 'Activity log'],
+  ['faculty', 'Faculty'], ['sections', 'Sections'], ['allotment', 'Subject allotment'], ['activity', 'Backup and log'],
 ];
 
 async function viewInstSetup(step = 'profile') {
@@ -348,8 +348,22 @@ async function viewInstSetup(step = 'profile') {
   if (step === 'activity') {
     const a = await api('GET', '/admin/data');
     if (seq !== nav_seq) return;
-    body.innerHTML = `<h2>Activity log <span class="muted small">(latest 100)</span></h2>
+    body.innerHTML = `<div class="between"><div><h2>Backup</h2><p class="small muted">One Excel file with every record of the institute: setup, students, papers, answers, marks, sheets and this log. Passwords and signatures are left out. Download one at the end of each session and keep it safe.</p></div>
+        <button type="button" id="backup">Download backup</button></div>
+      <h2 style="margin-top:18px">Activity log <span class="muted small">(latest 100)</span></h2>
       ${tbl(['When', 'Who', 'What', 'Details'], a.audit.map((x) => `<tr><td class="nowrap">${fmt(x.at)}</td><td>${esc(x.user_name)}</td><td>${esc(x.action)}</td><td class="small">${esc(x.detail)}</td></tr>`), 'Nothing recorded yet.')}`;
+    document.getElementById('backup').onclick = act(async () => {
+      const [b] = await Promise.all([api('GET', '/backup'), loadXLSX()]);
+      const X = window.XLSX;
+      const wb = X.utils.book_new();
+      const cut = (v) => (typeof v === 'string' && v.length > 32000 ? v.slice(0, 32000) : v); // Excel's cell limit
+      for (const [name, rows] of Object.entries(b.tables)) {
+        const ws = rows.length ? X.utils.json_to_sheet(rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, cut(v)])))) : X.utils.aoa_to_sheet([['(no records)']]);
+        X.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+      }
+      X.writeFile(wb, `COGNEXA_backup_${b.taken_at.slice(0, 10)}.xlsx`);
+      toast('Backup downloaded');
+    });
   }
 }
 
@@ -611,7 +625,7 @@ async function viewReports() {
     const testName = `${d.type}${d.number ? ` ${d.number}` : ' (all)'}`;
     const top = d.students.filter((x) => x.rank && x.rank <= 3).sort((p, r) => p.rank - r.rank);
     out.innerHTML = `<div class="card"><div class="between no-print"><span class="small muted">${d.students.length} students · ${d.subjects.length} subjects</span>
-        <span><button type="button" class="ghost small" id="rsx">Download Excel</button> <button type="button" class="ghost small" onclick="window.print()">Print / Save as PDF</button></span></div>
+        <span><button type="button" class="ghost small" id="rsx">Download Excel</button> <button type="button" class="ghost small" data-print>Print / Save as PDF</button></span></div>
       <div class="paper"><section class="doc">${letterhead(settings)}
       <h1 style="text-align:center">${esc(testName)} marks and rank sheet</h1>
       <p style="text-align:center">${esc(d.session || '')} · ${esc(d.programme || '')}${d.semester ? ` · Semester ${d.semester}` : ''} · ${d.scope === 'branch' ? 'All sections (branch rank)' : `Section: ${esc(d.section)}`}</p>
@@ -699,7 +713,7 @@ async function viewTheorySheet(subject, section) {
     return `<tr><td>${i + 1}</td><td class="nowrap">${esc(s.univ_roll || '')}</td><td class="nowrap">${esc(s.college_roll || '')}</td><td class="left">${esc(s.name)}</td>${tds.join('')}
       <td><b>${num(s.actual)}</b></td><td>${d.can_edit ? `<input type="number" step="0.5" data-mod="${s.id}" value="${s.moderation || ''}" class="cellin">` : num(s.moderation)}</td><td><b>${num(s.final)}</b></td></tr>`;
   });
-  app.innerHTML = `<p class="between no-print"><a href="#/sheets">← Evaluation sheets</a><span>${d.can_edit ? '<button type="button" id="save">Save attendance and moderation</button> ' : ''}<button type="button" class="ghost" id="xls">Download Excel</button> <button type="button" class="ghost" onclick="window.print()">Print / Save as PDF</button></span></p>
+  app.innerHTML = `<p class="between no-print"><a href="#/sheets">← Evaluation sheets</a><span>${d.can_edit ? '<button type="button" id="save">Save attendance and moderation</button> ' : ''}<button type="button" class="ghost" id="xls">Download Excel</button> <button type="button" class="ghost" data-print>Print / Save as PDF</button></span></p>
     <div class="paper"><section class="doc wide">${letterhead(inst)}${sheetTitle(d, 'Theory Evaluation Sheet (internal marks)')}
     <div class="scroll"><table class="rank tes"><thead><tr><th rowspan="2">S.No.</th><th rowspan="2">University<br>Roll No.</th><th rowspan="2">College<br>Roll No.</th><th rowspan="2">Student name</th>${head1.join('')}
       <th rowspan="2">Actual internal<br>(${num(d.total)})</th><th rowspan="2">Moderation</th><th rowspan="2">Final marks<br>(${num(d.total)})</th></tr><tr>${head2.join('')}</tr></thead>
@@ -759,7 +773,7 @@ async function viewLabSheet(subject, section, expId = null) {
   const C = d.lab.criteria;
   const cur = d.experiments.find((e) => e.id === expId) || d.experiments[d.experiments.length - 1] || null;
   const again = (id) => viewLabSheet(subject, section, id ?? cur?.id);
-  app.innerHTML = `<p class="between no-print"><a href="#/sheets">← Evaluation sheets</a><span><button type="button" class="ghost" id="xls">Download Excel</button> <button type="button" class="ghost" onclick="window.print()">Print / Save as PDF</button></span></p>
+  app.innerHTML = `<p class="between no-print"><a href="#/sheets">← Evaluation sheets</a><span><button type="button" class="ghost" id="xls">Download Excel</button> <button type="button" class="ghost" data-print>Print / Save as PDF</button></span></p>
     ${d.can_edit ? `<div class="card no-print"><div class="between"><h2>Enter marks</h2>
         ${d.experiments.length < d.lab.experiments ? '<button type="button" class="ghost small" id="addexp">+ Add experiment</button>' : ''}</div>
       ${d.experiments.length ? `<div class="row"><label>Experiment<select id="exppick">${d.experiments.map((e) => `<option value="${e.id}"${e.id === cur.id ? ' selected' : ''}>Experiment-${e.no}${e.title ? ` · ${esc(e.title)}` : ''}</option>`).join('')}</select></label>
@@ -839,4 +853,49 @@ async function viewLabSheet(subject, section, expId = null) {
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'LES');
     XLSX.writeFile(wb, `LES_${d.subject.code}_${d.section.name}`.replace(/[^\w-]+/g, '_') + '.xlsx');
   });
+}
+
+// ---------- help: a short guide, showing only the parts that apply to the signed-in person ----------
+
+function viewHelp() {
+  const p = user.perms || {};
+  const st = user.role === 'student';
+  const parts = [
+    [st, 'Taking a test', `<ol>
+      <li>Tests run on lab computers only (not phones). Your faculty reads out a 4-character <b>start code</b>; type it on the test page. Assignments need no code.</li>
+      <li>The test opens in full screen. Leaving full screen or switching tabs is recorded and shown to your faculty.</li>
+      <li>Answers are saved every 10 seconds. If the computer stops, sign in on another one with the current start code and continue; the clock keeps running.</li>
+      <li>Use the question palette to move between questions. Submit before the time ends; anything saved is submitted automatically when time is over.</li></ol>`],
+    [st, 'Results, re-check and re-test', `<ul>
+      <li>Your result appears once your faculty approves it: marks per question, CO-wise standing, rank in the section and the model answer.</li>
+      <li>If you disagree with the marks of a question, ask for a <b>re-check</b> from the result page within 7 days. The faculty's decision is final.</li>
+      <li>If you missed a test for a valid reason, speak to your faculty. A <b>re-test</b>, if given, shows on your list with your own window.</li>
+      <li>Forgot your password? Use "Forgot password" on the sign-in page; your class coordinator resets it.</li></ul>`],
+    [p.manage, 'Institute admin', `<ol>
+      <li><b>Institute setup</b>: work through the steps in order — profile (letterhead, session, first password, pass mark, rank scope, internal-marks scheme, lab rubric), departments, programmes, scheme of subjects, faculty, sections, subject allotment.</li>
+      <li>Each list can be uploaded from Excel; download the template on that step. The preview shows new, changed and wrong rows before anything is saved.</li>
+      <li><b>Backup and log</b>: download a full backup at the end of every session.</li></ol>`],
+    [p.students, 'Registrar: students', `<ul>
+      <li>Upload the student list from Excel, or add one or two students by hand. Usernames are the university roll numbers; everyone starts with the institute's first password and must change it.</li>
+      <li>At the end of a semester use <b>Promote</b> to move a class to the next semester. Sections can be changed in the first year only.</li></ul>`],
+    [(user.coordinates || []).length, 'Class coordinator', `<ul><li><b>My section</b> lists your students. Password-reset requests from your students appear there; reset sends them back to the first password.</li></ul>`],
+    [user.role === 'hod', 'HOD', `<ol>
+      <li><b>DQAC and setters</b>: choose the DQAC members, upload signatures, and for each subject decide whether every section sets its own paper or one chosen faculty sets a common paper.</li>
+      <li><b>Moderation</b>: track every paper; once DQAC has reviewed and the author has complied, approve it. Mid Term, Sessional, Assignment and Hybrid papers need this before they can be published. MCQ tests do not.</li></ol>`],
+    [user.dqac || user.role === 'hod', 'DQAC review', `<ul><li><b>Reviews</b> lists papers sent to you. Go through the 10-point checklist, write remarks and submit. The author answers each remark and sends the paper back if changes were asked.</li></ul>`],
+    [p.create, 'Faculty: setting a paper', `<ol>
+      <li><b>New assessment</b> → choose the type. Pick the subject and sections from your allotment, set the parts (how many questions, how many to attempt) and the window.</li>
+      <li>Add questions in the form or import them from the Excel template. Give each a CO and RBTL level; the highest level must match the paper's rules or DQAC is alerted.</li>
+      <li>For written answers add a model answer; the AI suggests a rubric which you can edit. Describe diagrams in words.</li>
+      <li>Send the paper for DQAC review, comply with remarks, and after HOD approval press <b>Publish to students</b>.</li></ol>`],
+    [p.approve, 'Faculty: the test and the results', `<ol>
+      <li>In the lab, open the assessment page and read out the <b>start code</b>. It changes every few minutes.</li>
+      <li>After submission the AI gives draft marks with a confidence flag. Open each script under <b>Submissions</b>, check low-confidence answers, change marks if needed and approve. Only approved results reach students.</li>
+      <li>Answer re-check requests from the bell. For an absent student, or a test spoilt by a power failure, use <b>Re-test</b> on the assessment page.</li>
+      <li><b>Evaluation sheets</b> builds the theory (TES) and lab (LES) internal-marks sheets from approved results; add attendance, lab marks and moderation, then download or print.</li></ol>`],
+    [!st && (p.reports === 'institute' || p.manage || user.role === 'hod'), 'Reports', `<ul><li><b>Reports</b> gives the rank sheet (section-wise or branch-wise, ties share a rank) and an overview of every assessment, with Excel download.</li></ul>`],
+  ].filter((x) => x[0]);
+  app.innerHTML = `<h1>Help</h1><p class="muted">What you can do in COGNEXA with your account.</p>
+    ${parts.map(([, h, body]) => `<div class="card help"><h2>${h}</h2>${body}</div>`).join('')}
+    <div class="card help"><h2>Something not working?</h2><p class="small">Note the page and what you were doing, and tell your institute admin. Every change is recorded in the activity log.</p></div>`;
 }

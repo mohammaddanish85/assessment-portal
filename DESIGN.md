@@ -90,3 +90,11 @@ General rule: every rule has a sensible default, and the institute can change it
 - [x] Lab evaluation sheet (LES): up to 10 experiments, rubric R1 (6), R3 (8), R4 (6) = 20 with level descriptions, average,
       scale to 15, moderation, final; rubric editable per institute; marks by grid or Excel; Excel and print.
 - [ ] Later: CO attainment levels (institute formula).
+
+## 10. Final polish
+- [x] Re-test: the section's faculty gives one student a personal window (absent, power or network failure), with a reason;
+      any earlier attempt is removed and summarised in the record and activity log; student notified; can be withdrawn until started.
+- [x] Backup: admin downloads every record of the institute as one Excel file (no passwords, signatures or secret seeds).
+- [x] Help page for every role, showing only what that account can do.
+- [x] Security headers: strict Content-Security-Policy (no inline scripts), no framing, nosniff; API responses never cached.
+- [ ] Later: email notifications (Workers Paid plan).
