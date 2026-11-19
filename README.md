@@ -8,46 +8,51 @@ before the result is released.
 
 ## Who uses it
 
-- **Platform owner:** sees access requests from the home page, creates institutes and their admin logins,
-  suspends or activates an institute. Has no access to an institute's internal data.
-- **Institute admin:** institute profile (name, logo), departments, courses and sections, subjects, staff and
-  students; gives each staff member a role and rights.
-- **Staff rights:** manage institute setup, create assessments, approve results, and which reports they can see
-  (own, whole department, whole institute). Roles (institute admin, nodal officer, head of department, faculty)
-  only fill in the usual rights; the admin can change them per person.
-- **Students:** take the assessments of their own section and see their results.
+- **Platform owner:** sees access requests from the home page, creates institutes (code = AICTE ID) and their
+  admin logins, suspends or activates an institute. Has no access to an institute's internal data.
+- **Institute admin:** Institute setup checklist: profile and rules (session, first password, pass mark, rank
+  scope, start-code interval, letterhead, paper format, internal-marks scheme, lab rubric), departments,
+  programmes, scheme with COs and Bloom levels, faculty with roles, sections with class coordinators, subject
+  allotment. Every list can be uploaded from Excel with a preview (new / update / no change / to fix).
+- **Registrar:** owns the student list: approve and import, add one, edit, detained / left, promote a section.
+- **HOD:** DQAC committee, who sets each subject's paper (each section or one common paper), assigns papers for
+  moderation, approves papers (A51), A51-G tracker, rank sheets, department results.
+- **DQAC member:** reviews assigned papers with the A51-B checklist and question-wise comments.
+- **Faculty:** papers for allotted subjects, results of their own sections, re-checks, evaluation sheets.
+- **Class coordinator:** the section's students, password-reset requests, rank sheet.
+- **Dean / Director / Nodal:** institute-wide reports.
+- **Students:** lab tests with a start code, results with rank, CO bands and model answers, re-check requests.
 
-Every institute's data is kept apart by its institute id. People log in with institute code, username and password;
-the platform owner uses the separate owner log in. A password set by someone else must be changed at first login.
-A database from the earlier single-institute version is moved into institute `INST1` automatically.
-
-Pages: `/` is the public home page with the request-access form; `/portal` is the application.
+People log in with institute code, username (employee ID or university roll no) and password. New accounts get
+the institute's first password and must set their own at first login; students cannot change it afterwards
+(the class coordinator, registrar or admin resets it). Pages: `/` is the public home page; `/portal` is the app.
+The full list of agreed rules is in `DESIGN.md`.
 
 ## What it covers
 
-- **Admin:** first-time account setup; institute name, second line and logo for printed documents; master data
-  (sections, subjects, faculty accounts, students in bulk per section) with edit and delete; password reset.
-- **Faculty:** create an assessment (subject from master data, sections, type, number, window, duration, questions,
-  CO, model answer, rubric), publish, review each submission, edit marks, approve.
-- **Student:** sees only the assessments of their own section; timed attempt with autosave, paste blocked,
-  tab switches recorded; result with marks, rubric breakdown, missing points and improvement suggestions.
-- **MCQ:** any question can be an MCQ (2 to 6 options, one correct), checked against the answer key without the LLM.
-  The "MCQ Test" assessment type allows only MCQs and shows the result the moment the student submits.
-- **Result release:** Sessional results always wait for faculty approval. Assignments and Tutorials can be set
-  to "Instant", which releases right after evaluation unless the model is unsure about any answer.
-- **Analysis (published results only):** class average, highest, lowest, question-wise average, CO-wise average and
-  count of students at or above a target the faculty sets, and a marks download (CSV, opens in Excel).
-- **Documents for records:** print-ready A4 pages for the assessment report, question paper, paper with answer key
-  and rubric, and evaluated answer sheets (one student or the whole class). Use "Print / Save as PDF" on the page.
+- **Papers:** five types (Mid Term, Sessional, Assignment, MCQ Test, Hybrid) with a faculty-defined structure
+  (parts, sub-parts, "attempt any N", max marks); CO and Bloom level per question from the scheme with a
+  CO-level check; questions typed or filled from an Excel template; AI-suggested rubrics; printed in the
+  institute's own format on its letterhead.
+- **Moderation (A51):** Mid Term, Sessional, Assignment and Hybrid papers go to the DQAC and the HOD before they
+  can be published; versions, compliance, view log and a printable A51 file with signatures.
+- **Tests:** JEE/NTA-style screen with a question palette, code box, 4-character start code from the faculty's
+  screen, full screen, phones refused, autosave every 10 seconds, resume on another computer.
+- **Evaluation:** MCQs against the key (optional negative marking); written answers by the LLM against the
+  rubric; the section's faculty approves. Best-of counting for choice parts.
+- **Results:** marks, rubric breakdown, missing points, suggestions, model answer, rank (ties share), preparedness
+  score, CO bands; re-check within 7 days; notification bell.
+- **Reports:** analysis per assessment (question-wise, CO-wise % of students at target), A53 rank sheet
+  (section- or branch-wise, Pass/Fail at the pass mark, toppers, Excel), institute overview.
+- **Evaluation sheets:** TES (internal marks from approved results, attendance, moderation; default
+  5 + 5 + 10 + 5 = 25) and LES (experiments, R1/R3/R4 rubric, average, scale to 15, moderation), Excel and print.
 - **Evaluation providers** (`EVAL_PROVIDER` in `wrangler.jsonc`):
   - `workers-ai`: Cloudflare Workers AI (default)
   - `openai-compatible`: any OpenAI-style endpoint, e.g. a model on the college server
     (set `LLM_BASE_URL`, `LLM_MODEL`, optional secret `LLM_API_KEY`)
   - `mock`: dummy keyword scorer for offline UI testing. Not a real evaluation.
 
-Faculty can also shuffle the question order per student and delete an assessment until a student starts it.
-
-Not built yet: editing a saved assessment, code questions, multi-institute support.
+Not built yet: CO attainment levels by the institute's formula, email notifications (needs the Workers Paid plan).
 
 ## Try it offline (no Cloudflare login)
 

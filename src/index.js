@@ -621,12 +621,23 @@ async function handle(request, env, ctx) {
   const student = () => user.role === 'student' || fail(403, 'Students only');
 
   // Which assessments this staff member may see: their own, their department's, or the whole institute's.
+  // A section's own faculty can open a published common paper set by someone else, to approve that section's scripts.
+  const ALLOTTED = `(s.status = 'published' AND EXISTS (SELECT 1 FROM allotments al JOIN assessment_sections ax ON ax.section_id = al.section_id
+    WHERE ax.assessment_id = s.id AND al.subject_id = s.subject_id AND al.faculty_id = ?))`;
+  // Who approves a student's script: the faculty allotted to that subject in the student's section (else the paper's author), or the HOD.
+  const mayApprove = async (t) => {
+    if (!user.perms.approve) return false;
+    if (user.perms.reports === 'institute' || (user.role === 'hod' && user.department_id && t.department_id === user.department_id)) return true;
+    const al = await env.DB.prepare(`SELECT al.faculty_id FROM allotments al JOIN users u ON u.section_id = al.section_id JOIN assessments s ON s.subject_id = al.subject_id
+      WHERE u.id = ? AND s.id = ?`).bind(t.student_id, t.assessment_id).first();
+    return al ? al.faculty_id === user.id : t.faculty_id === user.id;
+  };
   const scope = () => {
     if (user.perms.reports === 'institute') return { sql: 's.institute_id = ?', binds: [inst] };
     if (user.perms.reports === 'department' && user.department_id) {
-      return { sql: 's.institute_id = ? AND (s.department_id = ? OR s.faculty_id = ?)', binds: [inst, user.department_id, user.id] };
+      return { sql: `s.institute_id = ? AND (s.department_id = ? OR s.faculty_id = ? OR ${ALLOTTED})`, binds: [inst, user.department_id, user.id, user.id] };
     }
-    return { sql: 's.institute_id = ? AND s.faculty_id = ?', binds: [inst, user.id] };
+    return { sql: `s.institute_id = ? AND (s.faculty_id = ? OR ${ALLOTTED})`, binds: [inst, user.id, user.id] };
   };
   const isReviewer = async (aid) => !!(await env.DB.prepare('SELECT 1 FROM reviews WHERE assessment_id = ? AND reviewer_id = ?').bind(aid, user.id).first());
   const isHodOf = (a) => user.role === 'hod' && !!user.department_id && a.department_id === user.department_id;
@@ -658,7 +669,7 @@ async function handle(request, env, ctx) {
     staff();
     const sc = scope();
     const t = await env.DB.prepare(
-      `SELECT t.*, s.release_mode, s.subject_name, s.subject_code, s.type, s.number, u.name AS student_name, u.roll_no
+      `SELECT t.*, s.release_mode, s.subject_name, s.subject_code, s.type, s.number, s.department_id, s.faculty_id, u.name AS student_name, u.roll_no
        FROM attempts t JOIN assessments s ON s.id = t.assessment_id JOIN users u ON u.id = t.student_id
        WHERE t.id = ? AND ${sc.sql}`,
     ).bind(id, ...sc.binds).first();
@@ -1391,6 +1402,38 @@ async function handle(request, env, ctx) {
     return json({ ok: true });
   }
 
+  // ----- HOD: who sets the paper of each subject -----
+  if (route('GET', /^\/api\/paper-setters$/)) {
+    if (user.role !== 'hod' || !user.department_id) fail(403, 'Heads of department only');
+    const [subs, allot, ps, fac] = await env.DB.batch([
+      env.DB.prepare(`SELECT id, code, name, semester, type FROM subjects WHERE institute_id = ? AND department_id = ? AND type != 'Lab' ORDER BY semester, code`).bind(inst, user.department_id),
+      env.DB.prepare(`SELECT a.subject_id, sc.name AS section, u.id AS faculty_id, u.name AS faculty FROM allotments a JOIN sections sc ON sc.id = a.section_id JOIN users u ON u.id = a.faculty_id
+        JOIN subjects sb ON sb.id = a.subject_id WHERE sb.department_id = ? ORDER BY sc.name`).bind(user.department_id),
+      env.DB.prepare('SELECT subject_id, mode, setter_id FROM paper_setters WHERE institute_id = ?').bind(inst),
+      env.DB.prepare(`SELECT id, name FROM users WHERE institute_id = ? AND department_id = ? AND role IN ('faculty','hod','nodal') ORDER BY name`).bind(inst, user.department_id),
+    ]);
+    return json({ faculty: fac.results, subjects: subs.results.map((x) => ({ ...x, sections: allot.results.filter((a) => a.subject_id === x.id),
+      setting: ps.results.find((p) => p.subject_id === x.id) || { mode: 'section', setter_id: null } })) });
+  }
+  if (route('PUT', /^\/api\/paper-setters$/)) {
+    if (user.role !== 'hod' || !user.department_id) fail(403, 'Heads of department only');
+    const b = await body(request);
+    const sb = await env.DB.prepare('SELECT id, code FROM subjects WHERE id = ? AND institute_id = ? AND department_id = ?').bind(+b.subject_id || 0, inst, user.department_id).first();
+    if (!sb) fail(404, 'Subject not found in your department');
+    const mode = b.mode === 'common' ? 'common' : 'section';
+    let setter = null;
+    if (mode === 'common') {
+      const f = await env.DB.prepare(`SELECT id, name FROM users WHERE id = ? AND institute_id = ? AND role IN ('faculty','hod','nodal')`).bind(+b.setter_id || 0, inst).first();
+      if (!f) fail(400, 'Choose who sets the common paper');
+      setter = f.id;
+    }
+    await env.DB.prepare(`INSERT INTO paper_setters (institute_id, subject_id, mode, setter_id) VALUES (?,?,?,?)
+      ON CONFLICT (subject_id) DO UPDATE SET mode = excluded.mode, setter_id = excluded.setter_id`).bind(inst, sb.id, mode, setter).run();
+    if (setter) await notify(env, inst, [setter], `You set the common paper for ${sb.code} (all sections)`, '#/new');
+    await audit('paper setter set', `${sb.code}: ${mode}${setter ? ` by #${setter}` : ''}`);
+    return json({ ok: true });
+  }
+
   // ----- HOD: DQAC committee of the department -----
   if (route('GET', /^\/api\/dqac$/)) {
     if (user.role !== 'hod' || !user.department_id) fail(403, 'Only a head of department sets the DQAC');
@@ -1450,6 +1493,19 @@ async function handle(request, env, ctx) {
     for (const r of results) {
       if (!subjects.has(r.id)) subjects.set(r.id, { id: r.id, name: r.name, code: r.code, semester: r.semester, programme: r.programme, cos: JSON.parse(r.cos_json || '[]'), sections: [] });
       subjects.get(r.id).sections.push({ id: r.section_id, name: r.section, students: r.students });
+    }
+    // HOD's rule: a common paper is set only by the chosen setter, for every section of the subject.
+    const setters = (await env.DB.prepare(`SELECT subject_id, mode, setter_id FROM paper_setters WHERE institute_id = ? AND mode = 'common'`).bind(inst).all()).results;
+    for (const ps of setters) {
+      if (ps.setter_id !== user.id) { subjects.delete(ps.subject_id); continue; }
+      const all = (await env.DB.prepare(`SELECT sb.id, sb.name, sb.code, sb.semester, sb.cos_json, p.name AS programme, sc.id AS section_id, sc.name AS section,
+          (SELECT COUNT(*) FROM users WHERE section_id = sc.id AND role = 'student' AND status = 'active') AS students
+        FROM allotments a JOIN subjects sb ON sb.id = a.subject_id JOIN sections sc ON sc.id = a.section_id LEFT JOIN programmes p ON p.id = sb.programme_id
+        WHERE a.subject_id = ? ORDER BY sc.name`).bind(ps.subject_id).all()).results;
+      if (!all.length) continue;
+      const r0 = all[0];
+      subjects.set(ps.subject_id, { id: r0.id, name: r0.name, code: r0.code, semester: r0.semester, programme: r0.programme, cos: JSON.parse(r0.cos_json || '[]'), common: true,
+        sections: all.map((r) => ({ id: r.section_id, name: r.section, students: r.students })) });
     }
     return json({ allotment: true, session: st.session, subjects: [...subjects.values()] });
   }
@@ -1538,9 +1594,16 @@ async function handle(request, env, ctx) {
     // With allotment in use, a faculty member sets papers only for the subject and sections allotted to them.
     const anyAllot = await env.DB.prepare('SELECT COUNT(*) AS n FROM allotments WHERE institute_id = ?').bind(inst).first();
     if (anyAllot.n) {
-      const mine = await env.DB.prepare(`SELECT COUNT(*) AS n FROM allotments WHERE faculty_id = ? AND subject_id = ? AND section_id IN (${sectionIds.map(() => '?').join(',')})`)
-        .bind(user.id, subject.id, ...sectionIds).first();
-      if (mine.n !== sectionIds.length) fail(403, 'You can set papers only for the subject and sections allotted to you');
+      const ps = await env.DB.prepare('SELECT mode, setter_id FROM paper_setters WHERE subject_id = ?').bind(subject.id).first();
+      if (ps && ps.mode === 'common') {
+        if (ps.setter_id !== user.id) fail(403, 'Your HOD has chosen another faculty member to set the common paper for this subject');
+        const ok = await env.DB.prepare(`SELECT COUNT(*) AS n FROM allotments WHERE subject_id = ? AND section_id IN (${sectionIds.map(() => '?').join(',')})`).bind(subject.id, ...sectionIds).first();
+        if (ok.n !== sectionIds.length) fail(400, 'Choose sections where this subject is taught');
+      } else {
+        const mine = await env.DB.prepare(`SELECT COUNT(*) AS n FROM allotments WHERE faculty_id = ? AND subject_id = ? AND section_id IN (${sectionIds.map(() => '?').join(',')})`)
+          .bind(user.id, subject.id, ...sectionIds).first();
+        if (mine.n !== sectionIds.length) fail(403, 'You can set papers only for the subject and sections allotted to you');
+      }
     }
     if (!Array.isArray(b.questions) || !b.questions.length) fail(400, 'Add at least one question');
     if (b.questions.length > 80) fail(400, 'At most 80 questions');
@@ -1958,7 +2021,7 @@ async function handle(request, env, ctx) {
       total,
       max: pa.max_marks || results.reduce((s, r) => s + r.max_marks, 0),
       parts: pa.parts || null,
-      can_approve: !!user.perms.approve,
+      can_approve: await mayApprove(t),
       answers: results.map((r) => ({
         ...r,
         llm: r.llm_json ? JSON.parse(r.llm_json) : null,
@@ -1972,6 +2035,7 @@ async function handle(request, env, ctx) {
   if ((m = route('POST', /^\/api\/attempts\/(\d+)\/evaluate$/))) {
     can('approve');
     const t = await staffAttempt(+m[1]);
+    if (!(await mayApprove(t))) fail(403, 'The faculty of this student\'s section handles this result');
     if (t.status === 'in_progress') fail(409, 'The student has not submitted yet');
     // ?force=1 discards the existing LLM drafts of typed answers and marks them again
     // (used after changing the prompt or model). Final marks set by the faculty are not touched.
@@ -1988,6 +2052,7 @@ async function handle(request, env, ctx) {
   if ((m = route('POST', /^\/api\/attempts\/(\d+)\/approve$/))) {
     can('approve');
     const t = await staffAttempt(+m[1]);
+    if (!(await mayApprove(t))) fail(403, 'The faculty of this student\'s section approves this result');
     if (t.status === 'in_progress') fail(409, 'The student has not submitted yet');
     const b = await body(request);
     const { results } = await env.DB.prepare(

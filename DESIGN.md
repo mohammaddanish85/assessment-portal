@@ -31,7 +31,7 @@ General rule: every rule has a sensible default, and the institute can change it
 - [x] Class coordinator per section (set by admin): sees section students, resets passwords, sees missed tests.
 - [x] HOD picks DQAC members from department faculty (can change any time). (Assigning papers for review: phase 3.)
 - [x] Allotment rows: faculty × subject × section (one faculty many sections; one subject different faculty per section).
-- [ ] HOD decides per subject who sets the paper and whether it is common or per section.
+- [x] HOD decides per subject who sets the paper and whether it is common or per section.
       Each section's faculty approves that section's answer scripts.
 
 ## 4. Academic structure
@@ -42,14 +42,14 @@ General rule: every rule has a sensible default, and the institute can change it
 
 ## 5. Faculty: creating a paper
 - [x] Subject × section dropdown from allotment only; programme, semester, HOD, COs filled in.
-- [ ] Paper structure (parts, questions, sub-parts, attempt any N, max marks) — built.
+- [x] Paper structure (parts, questions, sub-parts, attempt any N, max marks) — built.
 - [x] Two ways: live form, or Excel template (Part, Q.No, Sub-part, Type, Question, CO, RBTL, Marks,
       Options A–D, Correct, Model answer, Rubric "criterion=marks; …") → preview → create.
 - [x] CO and RBTL from dropdowns; check: each CO used has at least one question at the CO's highest RBTL —
       otherwise an alert for DQAC (DQAC may accept or ask for change).
 - [x] AI suggests a rubric when the question/model answer is typed; faculty edits and saves.
 - [x] Diagrams are explained in words (no drawing pad). CS only for now (no equations/circuits).
-- [ ] Draft autosave; versions v1, v2… kept.
+- [x] Draft autosave; versions v1, v2… kept.
 - [x] MCQ tests: no approval. Sessional, Mid Term, Assignment: DQAC + HOD approval before students see it.
 
 ## 6. Moderation (format A51, without A51-F dispatch and CoE)

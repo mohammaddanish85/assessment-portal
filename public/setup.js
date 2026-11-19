@@ -427,7 +427,7 @@ async function viewStudents(sectionId = 0) {
 
 async function viewDqac() {
   const seq = nav_seq;
-  const d = await api('GET', '/dqac');
+  const [d, ps] = await Promise.all([api('GET', '/dqac'), api('GET', '/paper-setters')]);
   if (seq !== nav_seq) return;
   const pos = new Map(d.members.map((x) => [x.user_id, x.position]));
   app.innerHTML = `<h1>DQAC committee</h1>
@@ -436,7 +436,21 @@ async function viewDqac() {
       <td>${esc(x.name)}</td><td class="small">${esc(x.designation || '–')}</td>
       <td><select data-pos="${x.id}" style="margin:0"><option value="member">Member</option><option value="coordinator"${pos.get(x.id) === 'coordinator' ? ' selected' : ''}>DQAC coordinator</option></select></td>
       <td><label class="small" style="margin:0">Signature<input type="file" accept="image/png,image/jpeg" data-sig="${x.id}" style="margin:0"></label></td></tr>`), 'No faculty in your department yet.')}
-    <p><button>Save committee</button> <span class="small muted">You, as HOD, head the committee.</span></p></form></div>`;
+    <p><button>Save committee</button> <span class="small muted">You, as HOD, head the committee.</span></p></form></div>
+    <div class="card"><h2>Who sets the paper</h2><p class="small muted" style="margin-top:0">For each subject: every section's faculty sets its own paper, or one faculty member sets a common paper for all sections. Each section's faculty still approves its own students' results.</p>
+      ${tbl(['Subject', 'Sections and faculty', 'Paper', 'Set by', ''], ps.subjects.map((x) => `<tr data-sub="${x.id}"><td>${esc(x.code)} · ${esc(x.name)}</td>
+        <td class="small">${x.sections.map((a) => `${esc(a.section)}: ${esc(a.faculty)}`).join('<br>') || '<span class="muted">Not allotted</span>'}</td>
+        <td><select data-mode style="margin:0"><option value="section">Each section's own</option><option value="common"${x.setting.mode === 'common' ? ' selected' : ''}>Common for all sections</option></select></td>
+        <td><select data-setter style="margin:0"${x.setting.mode === 'common' ? '' : ' disabled'}><option value="">Choose…</option>${ps.faculty.map((f) => `<option value="${f.id}"${f.id === x.setting.setter_id ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}</select></td>
+        <td><button type="button" class="ghost small" data-save>Save</button></td></tr>`), 'No theory subjects in your department yet.')}</div>`;
+  app.querySelectorAll('tr[data-sub]').forEach((tr) => {
+    const mode = tr.querySelector('[data-mode]'), setter = tr.querySelector('[data-setter]');
+    mode.onchange = () => (setter.disabled = mode.value !== 'common');
+    tr.querySelector('[data-save]').onclick = act(async () => {
+      await api('PUT', '/paper-setters', { subject_id: +tr.dataset.sub, mode: mode.value, setter_id: +setter.value || null });
+      toast('Saved');
+    });
+  });
   app.querySelectorAll('[data-sig]').forEach((inp) => (inp.onchange = imgPicker(100, async (img) => {
     try { await api('PUT', `/signature/${inp.dataset.sig}`, { image: img }); toast('Signature saved'); } catch (err) { toast(err.message, true); }
   })));

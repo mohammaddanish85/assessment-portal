@@ -281,6 +281,13 @@ export const SCHEMA = [
     marks_json TEXT NOT NULL,
     UNIQUE (experiment_id, student_id)
   )`,
+  // Who sets the paper of a subject (HOD's decision): each section's own faculty, or one setter for a common paper.
+  `CREATE TABLE IF NOT EXISTS paper_setters (
+    institute_id INTEGER NOT NULL,
+    subject_id INTEGER NOT NULL UNIQUE,
+    mode TEXT NOT NULL DEFAULT 'section',
+    setter_id INTEGER
+  )`,
   `CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     institute_id INTEGER,
